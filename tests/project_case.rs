@@ -3,7 +3,7 @@
 //! records what it was given. One project then split into case-variant rows:
 //! on the machine this was found, 14 groups, one of them 23 + 514 sessions.
 
-use sessionwiki::util::project_key;
+use sessionwiki::util::project_key_as_on_disk;
 use std::path::Path;
 
 /// SESSIONWIKI_DATA is process-wide; tests that set it take turns.
@@ -35,7 +35,7 @@ fn a_case_variant_of_an_existing_directory_takes_its_on_disk_case() {
     }
     let variant = format!("{}/myproject/apo", base.display());
     assert_eq!(
-        project_key(&variant),
+        project_key_as_on_disk(&variant),
         format!("{}/MyProject/APO", base.display())
     );
 }
@@ -46,13 +46,13 @@ fn a_path_spelled_as_on_disk_or_missing_is_left_alone() {
     let base = std::fs::canonicalize(root.path()).unwrap();
     std::fs::create_dir_all(base.join("Exact")).unwrap();
     let exact = format!("{}/Exact", base.display());
-    assert_eq!(project_key(&exact), exact);
+    assert_eq!(project_key_as_on_disk(&exact), exact);
     // Gone from disk: nothing to compare against, so it stays as recorded.
     let gone = format!("{}/Deleted/Project", base.display());
-    assert_eq!(project_key(&gone), gone);
+    assert_eq!(project_key_as_on_disk(&gone), gone);
     // Not a filesystem path at all.
-    assert_eq!(project_key("relative/dir"), "relative/dir");
-    assert_eq!(project_key(""), "");
+    assert_eq!(project_key_as_on_disk("relative/dir"), "relative/dir");
+    assert_eq!(project_key_as_on_disk(""), "");
 }
 
 #[test]
@@ -67,13 +67,13 @@ fn two_directories_that_differ_only_in_case_are_not_merged() {
     std::fs::create_dir_all(base.join("proj")).unwrap();
     for name in ["Proj", "proj"] {
         let p = format!("{}/{name}", base.display());
-        assert_eq!(project_key(&p), p);
+        assert_eq!(project_key_as_on_disk(&p), p);
     }
     // A spelling that does not exist here is another (perhaps deleted)
     // project, not this one: it must not be folded into `Only`.
     std::fs::create_dir_all(base.join("Only")).unwrap();
     let other = format!("{}/only", base.display());
-    assert_eq!(project_key(&other), other);
+    assert_eq!(project_key_as_on_disk(&other), other);
 }
 
 /// Rows indexed before this fix keep their variant spelling until something

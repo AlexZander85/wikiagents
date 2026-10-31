@@ -300,17 +300,21 @@ impl Adapter for Antigravity {
                                         .or_else(|| inp.get("cwd"))
                                         .and_then(Value::as_str)
                                     {
-                                        let clean_cwd = cwd.trim().trim_matches(['"', '\'']).trim();
+                                        let clean_cwd = crate::util::collapse_backslashes(
+                                            cwd.trim().trim_matches(['"', '\'']).trim(),
+                                        );
                                         if !clean_cwd.is_empty() {
-                                            project = Some(clean_cwd.to_string());
+                                            project = Some(clean_cwd);
                                         }
                                     } else if let Some(p) = inp
                                         .get("Path")
                                         .or_else(|| inp.get("path"))
                                         .and_then(Value::as_str)
                                     {
-                                        let clean_p = p.trim().trim_matches(['"', '\'']).trim();
-                                        if let Some(parent) = Path::new(clean_p).parent() {
+                                        let clean_p = crate::util::collapse_backslashes(
+                                            p.trim().trim_matches(['"', '\'']).trim(),
+                                        );
+                                        if let Some(parent) = Path::new(&clean_p).parent() {
                                             let s = parent.to_string_lossy().trim().to_string();
                                             if !s.is_empty() {
                                                 project = Some(s);
@@ -451,5 +455,36 @@ mod tests {
         let ide_adapter = Antigravity::in_home(temp.path());
         let ide_discovered = ide_adapter.discover();
         assert_eq!(ide_discovered.files.len(), 0);
+    }
+
+    /// Some exports escape each separator twice, so a naive read put
+    /// `D:\\crypto` in `files.project` - a path no filter and no shell agrees
+    /// with. The project is un-escaped while parsing, before the index keys it.
+    #[test]
+    fn a_double_escaped_cwd_is_stored_as_one_path() {
+        let temp = tempfile::tempdir().unwrap();
+        let session_dir = temp
+            .path()
+            .join(".gemini")
+            .join("antigravity-cli")
+            .join("brain")
+            .join("cli_session_esc")
+            .join(".system_generated")
+            .join("logs");
+        std::fs::create_dir_all(&session_dir).unwrap();
+        let transcript_path = session_dir.join("transcript.jsonl");
+        std::fs::write(
+            &transcript_path,
+            r#"{"step_index":0,"source":"USER_EXPLICIT","type":"USER_INPUT","status":"DONE","created_at":"2026-10-24T12:00:00.000Z","content":"fix the build"}
+{"step_index":1,"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","created_at":"2026-10-24T12:00:05.000Z","content":"editing","tool_calls":[{"name":"edit_file","args":{"Cwd":"D:\\\\crypto\\\\src","Path":"D:\\\\crypto\\\\src\\\\main.rs","Replacement":"fn main() {}","Target":"fn main() {}"}}]}
+"#,
+        )
+        .unwrap();
+
+        let session = Antigravity::cli_in_home(temp.path())
+            .parse(&transcript_path)
+            .expect("parse should succeed");
+        assert_eq!(session.project, r"D:\crypto\src");
+        assert_eq!(crate::util::project_key(&session.project), "d:/crypto/src");
     }
 }

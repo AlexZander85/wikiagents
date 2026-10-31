@@ -242,8 +242,16 @@ pub fn tool_names() -> Vec<&'static str> {
 /// Add a line here to re-parse ONE tool after a parser fix; everything not
 /// listed sits at the current version.
 const READER_OVERRIDES: &[(&str, i64)] = &[
-    // ("antigravity", 3),
+    // 1.3 also un-escapes the double-escaped `D:\\proj` paths this tool writes,
+    // which only a re-parse can fix.
+    ("antigravity", 3),
 ];
+
+/// The tools whose parser version is deliberately not the global one, so a test
+/// can tell an expected override from a stray one.
+pub fn reader_overrides() -> &'static [(&'static str, i64)] {
+    READER_OVERRIDES
+}
 
 /// The parser version whose rows a tool's sessions should have. Stamped into
 /// `files.reader` on index, and compared against it by
@@ -251,8 +259,9 @@ const READER_OVERRIDES: &[(&str, i64)] = &[
 ///
 /// History: 1 = the original global reader; 2 = 1.3, so commit extraction
 /// (shipped in 1.2.0) reaches sessions indexed before it, and web-chat
-/// transcripts pick up thinking blocks. Raise it whenever a parser changes -
-/// sessions that never change on disk are otherwise parsed exactly once.
+/// transcripts pick up thinking blocks; 3 = antigravity only, for its escaped
+/// project paths. Raise it whenever a parser changes - sessions that never
+/// change on disk are otherwise parsed exactly once.
 pub fn reader_version(tool: &str) -> i64 {
     READER_OVERRIDES
         .iter()

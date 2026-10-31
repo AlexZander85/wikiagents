@@ -105,10 +105,15 @@ fn every_tool_is_reparsed_once_after_a_version_bump() {
 #[test]
 fn a_tool_without_an_override_sits_at_the_current_version() {
     for tool in sessionwiki::adapters::tool_names() {
-        assert_eq!(
-            sessionwiki::adapters::reader_version(tool),
-            index::READER,
-            "{tool} has no override in this build"
+        let got = sessionwiki::adapters::reader_version(tool);
+        assert!(
+            got >= index::READER,
+            "{tool} at {got}, below this build's reader {}",
+            index::READER
         );
+        let override_set = sessionwiki::adapters::reader_overrides();
+        if !override_set.iter().any(|(slug, _)| *slug == tool) {
+            assert_eq!(got, index::READER, "{tool} has no override in this build");
+        }
     }
 }

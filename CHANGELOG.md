@@ -79,6 +79,11 @@ progress on the `fix/review-1.3` branch; this section grows as each phase lands.
 - New integration test `tests/backup_roundtrip.rs` covers export → restore →
   search, the no-duplication guarantee and the newer-note-wins merge, without
   invoking git.
+- **Antigravity sessions were filed under a path no one else could type**: the
+  export escapes each separator twice, so the index stored `D:\\crypto` and the
+  folder never matched the same project written by another tool. The adapter
+  un-escapes `Cwd`/`Path` while parsing, and antigravity's reader version moves
+  to 3 so its existing rows are re-read (and re-keyed) once.
 
 ### Changed
 - **Parser version per tool**: `files.reader` now records the version of *that
@@ -111,6 +116,20 @@ progress on the `fix/review-1.3` branch; this section grows as each phase lands.
   `candidates` in `--json` — instead of one being picked silently; the same list
   is in `/api/commit`. A SHA is now also required to be hex, so a query can no
   longer be read as `LIKE` wildcards.
+- **One project, one key**: `files` gained `project_key` (+ `idx_files_project_key`),
+  the comparable form of a project path — escaped separators, quotes, `\\?\`
+  device prefixes, `\` versus `/`, a trailing slash and (on Windows and macOS)
+  letter case all folded away — and it is folded up to the repository the folder
+  sits in. Rows written before the column are filled on the next open, in one
+  transaction per distinct path, and a busy index defers the work rather than
+  blocking. `--project`, the MCP filters, `brief` and the web UI now compare that
+  key, so a folder filter includes the sessions started in its subfolders, the
+  way 1.1.1 promised. The old exact `project` string stays for display.
+- `util::project_key` was the name of the on-disk spelling helper; it is now
+  `util::project_key_as_on_disk`, and `project_key` is the key above. New
+  integration test `tests/project_key_filter.rs` covers the escaped, quoted,
+  mixed-case and subfolder spellings of one project, the backfill of rows that
+  predate the column, and that a sibling folder is still not swept in.
 
 ### Added
 - **`wikiagents hook install-git`** puts a two-line `prepare-commit-msg` hook in

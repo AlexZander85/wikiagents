@@ -155,6 +155,11 @@ When operating from bash or PowerShell, invoke `agentwiki` directly:
 
 *Tip:* Every query command accepts `--no-sync` for instant responses querying only the already-built index.
 
+*Tip:* `--project` matches a folder and everything filed under it: paths are
+compared as normalized keys (`files.project_key`), so `D:\repo`, `D:/repo/`,
+`D:\\repo` and a session started in `D:\repo\crates\app` are one project. A
+fragment with no `/`, `\` or `:` in it still matches as a substring.
+
 ### AI Git Blame: exact mode
 
 `agentwiki commit <sha>` is a guess unless the commit says who made it. Install

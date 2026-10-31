@@ -6192,9 +6192,10 @@ async function refresh() {
   const tagParam = currentTag ? `&tag=${encodeURIComponent(currentTag)}` : "";
   let projParam = "";
   if (currentProject) {
-    const folder = cleanProjectPath(currentProject).split(/[\\/]/).filter(Boolean).pop();
-    const queryTerm = (folder && folder.length >= 2) ? folder : cleanProjectPath(currentProject);
-    projParam = `&project=${encodeURIComponent(queryTerm)}`;
+    // The server matches a project by its normalized key and folds in sessions
+    // filed under a subfolder, so it gets the path - not one folder name, which
+    // was all a substring match could use safely.
+    projParam = `&project=${encodeURIComponent(normProjectPath(currentProject))}`;
   }
   // The listing is sorted by the server so "created" and "message count"
   // cover every session, not just the 500 most recently active.
@@ -6258,7 +6259,8 @@ async function refresh() {
   if (currentOnlyFavorites) {
     items = items.filter((row) => favoriteSet.has(row.id));
   }
-  // The server matches projects by substring; keep the exact one or matching root.
+  // The server already filters by project key; this keeps the exact folder or a
+  // root of it for the modes that come back from a file trace or a search.
   if (currentProject !== null) {
     const targetNorm = normProjectPath(currentProject);
     items = items.filter((row) => {

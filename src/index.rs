@@ -313,6 +313,7 @@ pub fn ensure_snippets_table(conn: &Connection) -> Result<()> {
         ("snippets", "role", "TEXT"),
         ("snippets", "message_ts", "TEXT"),
         ("files", "parent_id", "TEXT"),
+        ("files", "project_key", "TEXT NOT NULL DEFAULT ''"),
         ("messages", "is_rewound", "INTEGER DEFAULT 0"),
         ("summaries", "kind", "TEXT NOT NULL DEFAULT 'llm'"),
     ] {
@@ -323,6 +324,12 @@ pub fn ensure_snippets_table(conn: &Connection) -> Result<()> {
     if let Err(e) = backfill_snippet_metadata(conn) {
         eprintln!("warning: could not backfill snippet metadata: {e:#}");
     }
+    // A column added after a schema version shipped needs its index created the
+    // same way: the cache batch below only runs when the schema is behind. On a
+    // brand-new index `files` does not exist yet, and its own CREATE carries the
+    // index, so failing here is expected rather than worth a warning.
+    let _ = conn
+        .execute_batch("CREATE INDEX IF NOT EXISTS idx_files_project_key ON files(project_key)");
     Ok(())
 }
 
@@ -608,9 +615,14 @@ fn create_cache_schema_with_tokenizer(conn: &Connection, tokenizer: &str) -> Res
             -- the indexed copy (archive mode). NULL for live sessions.
             archived_at TEXT,
             -- The `READER` that parsed the row; 0 from a binary without it.
-            reader     INTEGER NOT NULL DEFAULT 0
+            reader     INTEGER NOT NULL DEFAULT 0,
+            -- The comparable form of `project` (see util::project_key), folded up
+            -- to the repository root. `project` keeps the tool's own spelling for
+            -- display; every filter and grouping uses this.
+            project_key TEXT NOT NULL DEFAULT ''
         );
         CREATE INDEX IF NOT EXISTS idx_files_session ON files(session_id);
+        CREATE INDEX IF NOT EXISTS idx_files_project_key ON files(project_key);
         -- Plain transcript rows + external-content FTS. Deleting a session is
         -- an indexed lookup here; with session_id stored UNINDEXED inside the
         -- FTS table it was a full scan per file, which made re-index runs
@@ -943,6 +955,7 @@ pub fn open() -> Result<Connection> {
         rehydrate_archive(&conn)?;
     }
     respell_projects(&conn)?;
+    fill_project_keys(&conn)?;
     reclassify_codex_subagents(&conn)?;
     resolve_gemini_projects(&conn)?;
     reparse_codex_for_mcp_errors(&conn)?;
@@ -954,10 +967,11 @@ pub fn open() -> Result<Connection> {
 
 /// Meta keys holding how far each index fix-up has checked `files`, by rowid.
 /// A rebuild of the cache restarts rowids, so `open` clears these with it.
-const FIXUP_MARKS: [&str; 3] = [
+const FIXUP_MARKS: [&str; 4] = [
     "codex_subagent_upto",
     "project_case_upto",
     "gemini_project_upto",
+    "project_key_upto",
 ];
 
 /// The `files` rowids a fix-up has not yet checked: above its mark, up to the
@@ -1076,7 +1090,7 @@ fn resolve_gemini_projects(conn: &Connection) -> Result<()> {
         let Some(root) = crate::adapters::gemini_project_root(std::path::Path::new(&path)) else {
             continue;
         };
-        let root = crate::util::project_key(&root);
+        let root = crate::util::project_key_as_on_disk(&root);
         if root != project {
             updates.push((
                 "UPDATE files SET project = ?1 WHERE path = ?2",
@@ -1226,9 +1240,9 @@ fn reparse_large_for_provenance(conn: &Connection) -> Result<()> {
 }
 
 /// Respell stored project paths as on disk, so case variants written by a
-/// version without `project_key` merge into one project. Only the paths in
-/// rows not yet checked are looked at; a schema bump would re-parse every
-/// session on disk to fix a handful of strings.
+/// version without `project_key_as_on_disk` merge into one project. Only the
+/// paths in rows not yet checked are looked at; a schema bump would re-parse
+/// every session on disk to fix a handful of strings.
 fn respell_projects(conn: &Connection) -> Result<()> {
     const KEY: &str = "project_case_upto";
     let (mark, top) = unchecked_rowids(conn, KEY)?;
@@ -1244,13 +1258,39 @@ fn respell_projects(conn: &Connection) -> Result<()> {
         .collect::<rusqlite::Result<_>>()?;
     let mut updates = Vec::new();
     for project in projects {
-        let key = crate::util::project_key(&project);
+        let key = crate::util::project_key_as_on_disk(&project);
         if key != project {
             updates.push((
                 "UPDATE files SET project = ?1 WHERE project = ?2",
                 vec![key, project],
             ));
         }
+    }
+    apply_without_waiting(conn, KEY, &top.to_string(), &updates)
+}
+
+/// Give `project_key` to rows written before the column existed. One UPDATE per
+/// distinct project string - thousands of sessions share a handful of paths -
+/// in the same single transaction, and a busy index defers it to the next open.
+fn fill_project_keys(conn: &Connection) -> Result<()> {
+    const KEY: &str = "project_key_upto";
+    let (mark, top) = unchecked_rowids(conn, KEY)?;
+    if top <= mark {
+        return Ok(());
+    }
+    let projects: Vec<String> = conn
+        .prepare(
+            "SELECT DISTINCT project FROM files
+             WHERE project != '' AND rowid > ?1 AND rowid <= ?2",
+        )?
+        .query_map(params![mark, top], |r| r.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    let mut updates = Vec::new();
+    for project in projects {
+        updates.push((
+            "UPDATE files SET project_key = ?1 WHERE project = ?2 AND project_key != ?1",
+            vec![crate::util::project_root_key(&project), project],
+        ));
     }
     apply_without_waiting(conn, KEY, &top.to_string(), &updates)
 }
@@ -1318,19 +1358,20 @@ fn rehydrate_archive(conn: &Connection) -> Result<()> {
         conn.execute(
             "INSERT INTO files
              (path, mtime, size, session_id, tool, project, title, started, ended,
-              msg_count, kind, archived_at)
-             VALUES (?1,0,0,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+              msg_count, kind, archived_at, project_key)
+             VALUES (?1,0,0,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
             params![
                 a.path,
                 a.session_id,
                 a.tool,
-                crate::util::project_key(&a.project),
+                crate::util::project_key_as_on_disk(&a.project),
                 a.title,
                 a.started,
                 a.ended,
                 msgs.len() as i64,
                 a.kind,
                 a.archived_at,
+                crate::util::project_root_key(&a.project),
             ],
         )?;
         {
@@ -1427,15 +1468,15 @@ fn index_one(
     )?;
     tx.execute(
         "INSERT OR REPLACE INTO files
-         (path, mtime, size, session_id, tool, project, title, started, ended, msg_count, kind, parent_id, reader)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)",
+         (path, mtime, size, session_id, tool, project, title, started, ended, msg_count, kind, parent_id, reader, project_key)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",
         params![
             key,
             mtime,
             size,
             session.id,
             session.tool,
-            crate::util::project_key(&session.project),
+            crate::util::project_key_as_on_disk(&session.project),
             crate::redact::redact(&session.title).as_ref(),
             session.started.map(|t| t.to_rfc3339()),
             session.ended.map(|t| t.to_rfc3339()),
@@ -1445,6 +1486,7 @@ fn index_one(
             // The tool's own parser version, so one tool's fix re-parses only
             // that tool's rows (see adapters::reader_version).
             crate::adapters::reader_version(session.tool),
+            crate::util::project_root_key(&session.project),
         ],
     )?;
     fold_moved_copy(tx, session, key)?;
@@ -2640,8 +2682,7 @@ fn push_session_scope(
         args.push(Box::new(t.to_string()));
     }
     if let Some(p) = filters.project {
-        sql.push_str(" AND f.project LIKE ? ESCAPE '\\'");
-        args.push(Box::new(format!("%{}%", escape_like(&crate::util::nfc(p)))));
+        push_project_scope(sql, args, p);
     }
     if let Some(t) = filters.tag {
         sql.push_str(
@@ -2651,6 +2692,40 @@ fn push_session_scope(
         args.push(Box::new(norm_tag(t)));
     }
     push_date_scope(sql, args, filters.since, filters.until);
+}
+
+/// Restrict `f` to one project.
+///
+/// `files.project_key` is the repository a session belongs to, spelled one way
+/// for every tool, while the filter is the folder a human typed. Either can be
+/// the wider path, so the test runs in both directions: the same key, a key
+/// filed under it (a session started in a subfolder of the repo), or a query
+/// that points into the stored folder. `LIKE` is used where the indexed column
+/// is on the left, `instr` where the pattern would have to come from the row.
+///
+/// A query that is not a path (`api`, a fragment) keeps the substring match it
+/// always had, and a row whose key has not been filled yet - the backfill
+/// defers when the index is busy - still matches through `f.project`.
+fn push_project_scope(sql: &mut String, args: &mut Vec<Box<dyn rusqlite::ToSql>>, project: &str) {
+    let raw = project.trim();
+    let key = crate::util::project_key(raw);
+    if !raw.contains(['/', '\\', ':']) || key.is_empty() {
+        sql.push_str(" AND (f.project_key LIKE ? ESCAPE '\\' OR f.project LIKE ? ESCAPE '\\')");
+        let pattern = format!("%{}%", escape_like(&crate::util::nfc(raw)));
+        args.push(Box::new(pattern.clone()));
+        args.push(Box::new(pattern));
+        return;
+    }
+    sql.push_str(
+        " AND (f.project_key = ?
+                  OR f.project_key LIKE ? ESCAPE '\\'
+                  OR (f.project_key != '' AND instr(?, f.project_key || '/') = 1)
+                  OR (f.project_key = '' AND f.project LIKE ? ESCAPE '\\'))",
+    );
+    args.push(Box::new(key.clone()));
+    args.push(Box::new(format!("{}/%", escape_like(&key))));
+    args.push(Box::new(key.clone()));
+    args.push(Box::new(format!("%{}%", escape_like(&key))));
 }
 
 pub fn recent_range(
@@ -2725,19 +2800,23 @@ pub fn recent_range(
     Ok(out)
 }
 
-/// Recent main sessions whose launch project is EXACTLY this directory (for the
-/// SessionStart recall hook). Exact equality - never the substring `--project`
-/// filter, which over-matches sibling/child paths. Newest first, stable.
+/// Recent main sessions whose launch project is this directory or the
+/// repository around it (for the SessionStart recall hook). Matched on
+/// `project_key` - the folder folded up to the repository root and spelled one
+/// way for every tool - with the old exact `project` comparison kept beside it
+/// so a row whose key has not been filled yet is not lost. Never the substring
+/// `--project` filter, which over-matches sibling paths. Newest first, stable.
 pub fn project_brief(conn: &Connection, project: &str, limit: usize) -> Result<Vec<SessionRow>> {
-    let p = crate::util::project_key(project.trim_end_matches('/'));
+    let key = crate::util::project_key(project);
+    let native = crate::util::project_key_as_on_disk(project.trim_end_matches('/'));
     let mut stmt = conn.prepare(&format!(
         "SELECT session_id, tool, path, project, title, started, msg_count, kind, {PREVIEW_SQL}, {SUMMARY_SQL}, {TAGS_SQL}, (archived_at IS NOT NULL)
          FROM files f
-         WHERE f.project = ?1 AND f.kind = 'main'
+         WHERE (f.project_key = ?1 OR f.project = ?2) AND f.kind = 'main'
          ORDER BY f.started DESC, f.session_id
-         LIMIT ?2"
+         LIMIT ?3"
     ))?;
-    let rows = stmt.query_map(params![p, limit as i64], |r| {
+    let rows = stmt.query_map(params![key, native, limit as i64], |r| {
         Ok(SessionRow {
             last_active: None,
             session_id: r.get(0)?,
@@ -4606,6 +4685,9 @@ pub fn subagents_for_parent(conn: &Connection, parent_id: &str) -> Result<Vec<Se
 
 pub struct ProjectRow {
     pub project: String,
+    /// The comparable form of `project`, so a client can filter with it and get
+    /// every spelling of the folder back (see `util::project_key`).
+    pub project_key: String,
     pub sessions: i64,
     pub messages: i64,
     pub oldest: Option<String>,
@@ -4623,8 +4705,10 @@ pub fn projects(conn: &Connection) -> Result<Vec<ProjectRow>> {
          GROUP BY project ORDER BY count(*) DESC, max(COALESCE(ended, started)) DESC",
     )?;
     let rows = stmt.query_map([], |r| {
+        let project: String = r.get(0)?;
         Ok(ProjectRow {
-            project: r.get(0)?,
+            project_key: crate::util::project_key(&project),
+            project,
             sessions: r.get(1)?,
             messages: r.get(2)?,
             oldest: r.get(3)?,

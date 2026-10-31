@@ -130,7 +130,7 @@ impl Adapter for Prodex {
         // id, which listed it twice and made `show <id>` ambiguous.
         let mut walked = std::collections::HashSet::new();
         for root in roots {
-            let root = PathBuf::from(crate::util::project_key(&root.to_string_lossy()));
+            let root = PathBuf::from(crate::util::project_key_as_on_disk(&root.to_string_lossy()));
             if !walked.insert(std::fs::canonicalize(&root).unwrap_or_else(|_| root.clone())) {
                 continue;
             }

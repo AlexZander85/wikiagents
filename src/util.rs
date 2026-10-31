@@ -349,7 +349,8 @@ pub fn nfc(s: &str) -> String {
     s.nfc().collect()
 }
 
-/// A project path as the index stores it: NFC, and spelled as on disk.
+/// The project path as the index displays it: NFC, and spelled with the exact
+/// spelling used on disk.
 ///
 /// On a case-insensitive filesystem (WSL's /mnt/<drive>, macOS by default) a
 /// shell can `cd` into the same directory as `apo` or `APO`, and each tool
@@ -358,7 +359,10 @@ pub fn nfc(s: &str) -> String {
 /// that exact name, and exactly one entry matches it ignoring case. A
 /// case-sensitive filesystem never reaches that: a variant spelling there does
 /// not exist. Results are cached; listing a drvfs directory is slow.
-pub fn project_key(project: &str) -> String {
+///
+/// Keep it for display and for `files.project`; comparisons use [`project_key`],
+/// which folds this form down to one comparable string.
+pub fn project_key_as_on_disk(project: &str) -> String {
     use std::collections::HashMap;
     use std::sync::{Mutex, OnceLock};
     static CACHE: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
@@ -442,6 +446,190 @@ fn on_disk_case(path: &str) -> Option<String> {
     } else {
         respelled
     })
+}
+
+/// A project path in the one form every comparison uses: the same folder
+/// written by a Windows tool, a POSIX shell, a JSON export or the web UI all
+/// key identically.
+///
+/// `files.project` keeps each tool's spelling for display, so one project
+/// reached the filters as `D:\\crypto`, `D:/crypto/` and `d:\crypto\src` and
+/// matched only by substring luck. This is the pure-string half of that: no
+/// disk access, so it is safe on a query a human typed and stable enough to
+/// store as `files.project_key`. The rules mirror `normProjectPath` in
+/// webui.html so the UI and the backend agree on what one project is.
+pub fn project_key(project: &str) -> String {
+    let mut s = nfc(project);
+    // An export can wrap the value in quotes and escape each separator twice,
+    // and unescaping can reveal another layer of either.
+    for _ in 0..3 {
+        let stripped = s
+            .trim()
+            .trim_matches(|c| c == '"' || c == '\'')
+            .trim()
+            .to_string();
+        let collapsed = collapse_backslashes(&stripped);
+        if collapsed == s {
+            break;
+        }
+        s = collapsed;
+    }
+    // Placeholders the UI already treats as "no project".
+    if s == "-" || s == "null" || s == "undefined" {
+        return String::new();
+    }
+    // The device namespace is a Windows spelling of a path, not part of it -
+    // and the pass above has already reduced `\\?\` to `\?\`.
+    if let Some(rest) = s.strip_prefix(r"\?\UNC\") {
+        s = format!(r"\\{rest}");
+    } else if let Some(rest) = s.strip_prefix(r"\?\") {
+        s = rest.to_string();
+    }
+    s = s.replace('\\', "/");
+    while s.contains("//") {
+        s = s.replace("//", "/");
+    }
+    // `C:/` and `/` are roots; a trailing slash elsewhere adds no information.
+    let drive_root = s.len() == 3 && s.ends_with(":/");
+    if s.len() > 1 && !drive_root {
+        s = s.trim_end_matches('/').to_string();
+    }
+    if cfg!(any(windows, target_os = "macos")) {
+        s = s.to_lowercase();
+    }
+    s.trim().to_string()
+}
+
+/// Collapse every run of backslashes to one, the way a JSON string unescapes
+/// one layer at a time (`D:\\\\x` -> `D:\\x` -> `D:\x`).
+pub fn collapse_backslashes(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\\' {
+            while chars.peek() == Some(&'\\') {
+                chars.next();
+            }
+            out.push('\\');
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// The key of the repository a path belongs to, or its own key if it is not
+/// inside one.
+///
+/// Sessions of one repository get filed under whatever folder the tool was
+/// launched from - the checkout, `src/`, a package subfolder - so filtering by
+/// project missed the sessions started one level down. Walking up to the folder
+/// holding `.git` gives every one of them the same key. Cached for the life of
+/// the process: a sync walks the same few parents hundreds of times.
+pub fn project_root_key(project: &str) -> String {
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
+    static CACHE: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
+    let key = project_key(project);
+    if key.is_empty() {
+        return key;
+    }
+    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Some(hit) = cache.lock().ok().and_then(|c| c.get(&key).cloned()) {
+        return hit;
+    }
+    let root = match root_dir(&key) {
+        Some(dir) => project_key(&dir.to_string_lossy()),
+        None => key.clone(),
+    };
+    if let Ok(mut c) = cache.lock() {
+        c.insert(key, root.clone());
+    }
+    root
+}
+
+/// The nearest directory at or above `project` holding a `.git`, if any.
+fn root_dir(project: &str) -> Option<std::path::PathBuf> {
+    #[cfg(windows)]
+    let mut dir = std::path::PathBuf::from(project.replace('/', "\\"));
+    #[cfg(not(windows))]
+    let mut dir = std::path::PathBuf::from(project);
+    if !dir.is_dir() {
+        return None;
+    }
+    loop {
+        if dir.join(".git").exists() {
+            return Some(dir);
+        }
+        if !dir.pop() {
+            return None;
+        }
+    }
+}
+
+#[cfg(test)]
+mod project_key_tests {
+    use super::{project_key, project_root_key};
+
+    #[test]
+    fn every_spelling_of_one_folder_keys_alike() {
+        // The escaped form is what an Antigravity export puts in the database.
+        for spelling in [
+            r#""d:\\crypto""#,
+            "D:/crypto/",
+            r#"D:\crypto"#,
+            r"\\?\D:\crypto",
+            "d:/CRYPTO",
+        ] {
+            assert_eq!(project_key(spelling), "d:/crypto", "{spelling:?}");
+        }
+    }
+
+    #[test]
+    fn a_posix_path_keeps_its_case_and_loses_its_trailing_slash() {
+        assert_eq!(project_key("/home/u/app/"), "/home/u/app");
+        assert_eq!(
+            project_key("/home/u/App"),
+            if cfg!(windows) {
+                "/home/u/app"
+            } else {
+                "/home/u/App"
+            }
+        );
+    }
+
+    #[test]
+    fn roots_and_placeholders() {
+        assert_eq!(project_key("C:/"), "c:/");
+        assert_eq!(project_key("/"), "/");
+        assert_eq!(project_key(""), "");
+        for placeholder in ["-", "null", "undefined", "  \"\" "] {
+            assert_eq!(project_key(placeholder), "", "{placeholder:?}");
+        }
+    }
+
+    #[test]
+    fn a_folder_outside_a_repo_keys_as_itself() {
+        let dir = tempfile::tempdir().unwrap();
+        // Nothing on disk, so there is no repository to walk up to and the key
+        // is the path as written.
+        let path = dir.path().join("deep").join("nested");
+        let key = project_root_key(&path.to_string_lossy());
+        assert_eq!(key, project_key(&path.to_string_lossy()));
+        assert!(key.ends_with("/deep/nested"), "{key}");
+    }
+
+    #[test]
+    fn a_folder_inside_a_repo_keys_as_the_repo() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".git")).unwrap();
+        let package = dir.path().join("crates").join("app");
+        std::fs::create_dir_all(&package).unwrap();
+        assert_eq!(
+            project_root_key(&package.to_string_lossy()),
+            project_key(&dir.path().to_string_lossy())
+        );
+    }
 }
 
 pub fn human_size(bytes: u64) -> String {

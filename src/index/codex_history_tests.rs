@@ -172,7 +172,7 @@ fn a_thread_whose_rollout_is_gone_is_indexed_from_thread_history() {
             |r| r.get(0),
         )
         .unwrap();
-    assert_eq!(project, crate::util::project_key("/repo"));
+    assert_eq!(project, crate::util::project_key_as_on_disk("/repo"));
 }
 
 #[test]

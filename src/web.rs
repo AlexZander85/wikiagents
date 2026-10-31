@@ -406,6 +406,7 @@ fn api_projects(conn: &Connection) -> Result<Boxed> {
         .iter()
         .map(|p| json!({
             "project": p.project,
+            "project_key": p.project_key,
             "sessions": p.sessions,
             "messages": p.messages,
             "newest": p.newest,
@@ -1257,7 +1258,16 @@ fn api_snippet_save(conn: &Connection, req: &mut tiny_http::Request, query: &str
 /// `--json` contract are the exact same field set (id/msgs/tags-array/...),
 /// and can never drift apart.
 fn row_json(r: &index::SessionRow) -> serde_json::Value {
-    serde_json::to_value(r).unwrap_or_else(|_| json!({}))
+    let mut val = serde_json::to_value(r).unwrap_or_else(|_| json!({}));
+    // The key the list filters match on, so a click on a project name filters
+    // by folder rather than by one tool's spelling of it.
+    if let Some(object) = val.as_object_mut() {
+        object.insert(
+            "project_key".to_string(),
+            json!(crate::util::project_key(&r.project)),
+        );
+    }
+    val
 }
 
 fn param(query: &str, key: &str) -> Option<String> {
