@@ -410,6 +410,21 @@ enum Command {
 enum HookCmd {
     /// Claude Code SessionStart: print a fenced recall brief for the launch project
     SessionStart,
+    /// git prepare-commit-msg: append the AI-Session trailer (install with `hook install-git`)
+    PrepareCommitMsg {
+        /// git's own arguments: <msg-file> [<source> [<sha>]]. Collected rather
+        /// than named because a hook is called with `"$@"` and must not fail on
+        /// the trailing sha, and because three extra named fields were enough to
+        /// overflow this binary's 1 MB main-thread stack in a debug build.
+        #[arg(num_args = 1.., required = true)]
+        args: Vec<String>,
+    },
+    /// Install the prepare-commit-msg hook so commits record their AI session
+    InstallGit {
+        /// Repository to install into (default: current directory)
+        #[arg(long)]
+        repo: Option<String>,
+    },
 }
 
 fn main() {
@@ -590,13 +605,21 @@ fn main() {
         Command::Stats => commands::stats(),
         Command::Vacuum => commands::vacuum(),
         Command::Doctor { json } => doctor::run(json),
-        Command::Hook {
-            cmd: HookCmd::SessionStart,
-        } => {
+        Command::Hook { cmd } => match cmd {
             // Always exit 0 with whatever was printed; never the exit(1) path.
-            sessionwiki::hook::session_start();
-            return;
-        }
+            HookCmd::SessionStart => {
+                sessionwiki::hook::session_start();
+                return;
+            }
+            // A message hook that fails would stop the user's commit.
+            HookCmd::PrepareCommitMsg { args } => {
+                let msg_file = args.first().map(String::as_str).unwrap_or("");
+                let source = args.get(1).map(String::as_str);
+                sessionwiki::hook::prepare_commit_msg(msg_file, source);
+                return;
+            }
+            HookCmd::InstallGit { repo } => commands::hook_install_git(repo.as_deref()),
+        },
         Command::Backup {
             repo,
             test,

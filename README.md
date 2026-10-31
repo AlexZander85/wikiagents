@@ -204,6 +204,39 @@ wikiagents doctor
 
 ---
 
+## 🎯 AI Git Blame: точный режим
+
+`wikiagents commit <sha>` answers from the commit itself when the commit says
+which session made it. Without that mark, it can only guess from the transcript.
+
+```bash
+# Once per repository: install the prepare-commit-msg hook
+wikiagents hook install-git
+wikiagents hook install-git --repo D:/projects/api
+```
+
+The hook appends one trailer line to every commit message:
+
+```
+fix: refresh the expired token
+
+AI-Session: 019a2b7c3d
+```
+
+- The session id comes from `WIKIAGENTS_SESSION_ID` (set it for any agent, or in
+  a wrapper script); with no such variable, the hook reads
+  `<.git>/wikiagents-session`, which the SessionStart hook writes for Claude
+  Code. Older than 12 hours is ignored, and anything ambiguous is left alone.
+- `wikiagents hook install-git` never overwrites a hook that is not ours - it
+  prints the one line to add instead.
+- `wikiagents commit <sha>` then reports `AI-Session trailer (exact)`. Sessions
+  that merely *quoted* a SHA (`git log`, a `/commit/<sha>` link) are no longer
+  credited with it at all; if several still claim it, they are all listed as
+  ambiguous instead of one being picked silently.
+- A merge or squash message keeps no trailer: those commits were not made here.
+
+---
+
 ## 🏛️ High-Performance Architecture: Why Native OS WebView?
 
 WikiAgents delivers a fluid, instant UI while maintaining a microscopic ~3.9 MB binary footprint and ~35 MB RAM footprint by using an optimal division of labor between Rust and the OS:

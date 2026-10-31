@@ -788,8 +788,9 @@ fn api_commit(conn: &Connection, sha: &str) -> Result<Boxed> {
                 .boxed(),
         );
     }
-    if let Some(row) = index::find_session_by_commit(conn, clean)? {
-        let mut val = row_json(&row);
+    let rows = index::find_session_by_commit(conn, clean)?;
+    if let Some(row) = rows.first() {
+        let mut val = row_json(row);
         let commits = index::get_session_commits(conn, &row.session_id).unwrap_or_default();
         val["commits"] = json!(commits
             .into_iter()
@@ -797,6 +798,11 @@ fn api_commit(conn: &Connection, sha: &str) -> Result<Boxed> {
                 "sha": s, "message": m, "timestamp": t
             }))
             .collect::<Vec<_>>());
+        // Sessions that merely quote a SHA are not its author; when more than
+        // one still claims it, the UI is told so instead of one being picked.
+        if rows.len() > 1 {
+            val["candidates"] = json!(rows.iter().map(row_json).collect::<Vec<_>>());
+        }
         json_response(val)
     } else {
         Ok(

@@ -1369,7 +1369,17 @@ fn rehydrate_archive(conn: &Connection) -> Result<()> {
             "INSERT OR IGNORE INTO session_commits(session_id, commit_sha, message, timestamp) VALUES (?1,?2,?3,?4)",
         )?;
         for message in &msgs {
-            let commits = extract_commits_from_text(&message.text);
+            // Only output the agent produced can hold its own commit result; a
+            // user paste of someone else's `git commit` is not authorship.
+            if !matches!(message.role.as_str(), "assistant" | "tool") {
+                continue;
+            }
+            let mut commits = extract_commits_from_text(&message.text);
+            // The `git commit` output a tool row really carries is in the raw
+            // result, not in the display text.
+            if let Some(raw) = &message.full_text {
+                commits.extend(extract_commits_from_text(raw));
+            }
             for (sha, msg) in commits {
                 ins_commit.execute(params![a.session_id, sha, msg, None::<i64>])?;
             }
@@ -1493,11 +1503,16 @@ fn index_one(
                 crate::redact::redact(&e.snippet).as_ref(),
             ])?;
         }
-        // Commit tracking: extract any Git commits created or referenced in this session
+        // Commit tracking: the commits this session created, read out of the
+        // output it produced. The user's own messages are not scanned - they
+        // quote other people's history all the time.
         let mut ins_commit = tx.prepare_cached(
             "INSERT OR IGNORE INTO session_commits(session_id, commit_sha, message, timestamp) VALUES (?1,?2,?3,?4)",
         )?;
         for m in &session.messages {
+            if !matches!(m.role, Role::Assistant | Role::Tool) {
+                continue;
+            }
             let mut commits = extract_commits_from_text(&m.text);
             if let Some(crate::model::ToolEvent::Summary(summary)) = &m.tool {
                 if let Some(output) = &summary.output {
@@ -4183,7 +4198,15 @@ pub fn is_hex_sha(s: &str) -> bool {
     has_hex_letter || bytes.len() == 40
 }
 
-/// Passively extract Git commit hashes and commit messages from conversation text and tool outputs.
+/// Extract the commits a session *created* from tool output: the `[<branch>
+/// <sha>] <subject>` line `git commit` prints, plus the subject wrapped to the
+/// next line. Callers feed this only assistant/tool text.
+///
+/// Mentions are not authorship, so they are deliberately not collected: a
+/// `/commit/<sha>` link, or a `commit <sha>` line of `git log`/`git show`, says
+/// somebody read that commit, not that this session made it. Attributing them
+/// credited sessions with other people's history. `AI-Session:` trailers
+/// (`hook install-git`) give the exact answer instead, when they exist.
 pub fn extract_commits_from_text(text: &str) -> Vec<(String, Option<String>)> {
     let mut results = Vec::new();
     let lines: Vec<&str> = text.lines().collect();
@@ -4193,7 +4216,7 @@ pub fn extract_commits_from_text(text: &str) -> Vec<(String, Option<String>)> {
             continue;
         }
 
-        // Pattern 1: Terminal git commit output: "[<branch> <sha>] <subject>"
+        // Terminal git commit output: "[<branch> <sha>] <subject>"
         // Must start with '[' or whitespace+'[' (not '[[' or '([')
         if trimmed.starts_with('[') && !trimmed.starts_with("[[") {
             if let Some(close_idx) = trimmed.find(']') {
@@ -4226,31 +4249,6 @@ pub fn extract_commits_from_text(text: &str) -> Vec<(String, Option<String>)> {
                 }
             }
         }
-
-        // Pattern 2: Commit URLs: ".../commit/<sha>..."
-        let mut cur = trimmed;
-        while let Some(pos) = cur.find("/commit/") {
-            let after = &cur[pos + 8..];
-            let hex_len = after.bytes().take_while(|b| b.is_ascii_hexdigit()).count();
-            if (7..=40).contains(&hex_len) {
-                let candidate = &after[..hex_len];
-                if is_hex_sha(candidate) {
-                    results.push((candidate.to_ascii_lowercase(), None));
-                }
-            }
-            cur = &after[hex_len..];
-        }
-
-        // Pattern 3: git log output: "commit <40-hex-sha>"
-        if let Some(rest) = trimmed
-            .strip_prefix("commit ")
-            .or_else(|| trimmed.strip_prefix("Commit "))
-        {
-            let candidate = rest.split_whitespace().next().unwrap_or("");
-            if candidate.len() == 40 && is_hex_sha(candidate) {
-                results.push((candidate.to_ascii_lowercase(), None));
-            }
-        }
     }
     // Deduplicate preserving order
     let mut deduped = Vec::new();
@@ -4263,29 +4261,44 @@ pub fn extract_commits_from_text(text: &str) -> Vec<(String, Option<String>)> {
     deduped
 }
 
-/// Look up a session by an exact or prefix match on its commit SHA.
-pub fn find_session_by_commit(conn: &Connection, sha: &str) -> Result<Option<SessionRow>> {
+/// Sessions that claim a commit, by exact or prefix SHA match, newest first.
+///
+/// More than one is normal: the `git commit` output can be quoted into a later
+/// session, or two sessions can share a branch. Callers show the ambiguity
+/// instead of silently picking one - `AI-Session:` trailers are the exact
+/// answer and take precedence over this lookup.
+pub fn find_session_by_commit(conn: &Connection, sha: &str) -> Result<Vec<SessionRow>> {
     let clean = sha.trim().to_ascii_lowercase();
-    if clean.len() < 7 {
-        return Ok(None);
+    // A SHA is hex; anything else (including `%` and `_`, which LIKE would read
+    // as wildcards) matches nothing.
+    if clean.len() < 7 || !clean.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Ok(Vec::new());
     }
-    let mut stmt = conn.prepare_cached(
-        "SELECT session_id, commit_sha, message, timestamp 
-         FROM session_commits 
-         WHERE commit_sha LIKE ?1 || '%' 
-            OR (?1 LIKE commit_sha || '%' AND length(commit_sha) >= 7)
-         LIMIT 1",
-    )?;
-    let found: Option<(String, String, Option<String>, Option<i64>)> = stmt
-        .query_row(params![clean], |r| {
-            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
-        })
-        .optional()?;
-    if let Some((sid, _csha, _msg, _ts)) = found {
-        let matches = resolve(conn, &sid)?;
-        return Ok(matches.into_iter().next());
+    let ids: Vec<String> = conn
+        .prepare_cached(
+            "SELECT DISTINCT session_id FROM session_commits
+             WHERE commit_sha LIKE ?1 || '%'
+                OR (?1 LIKE commit_sha || '%' AND length(commit_sha) >= 7)",
+        )?
+        .query_map(params![clean], |r| r.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    let mut out = Vec::new();
+    for id in ids {
+        if let Some(row) = resolve(conn, &id)?.into_iter().next() {
+            out.push(row);
+        }
     }
-    Ok(None)
+    // Newest first; a session that never recorded a time sorts last.
+    out.sort_by_cached_key(|r| {
+        std::cmp::Reverse(
+            r.last_active
+                .as_deref()
+                .or(r.started.as_deref())
+                .unwrap_or("")
+                .to_string(),
+        )
+    });
+    Ok(out)
 }
 
 /// One row of `session_commits`: sha, the commit subject, and its unix time.
@@ -5553,34 +5566,41 @@ I made the commit:
 [main 7f2a1b9] fix: resolve race condition in token refresh
  2 files changed, 10 insertions(+)
 
-Also see https://github.com/AlexZander85/crypto/commit/0623bd8 for details.
 Next is another commit:
 [feat/auth ca54746]
 feat: implement oauth token exchange
 1 file changed, 50 insertions(+)
 
-And a git log output:
-commit 0feb3fdd929bcd6649e0e7c5a688cf7dd012ef21
-Author: Test <test@example.com>
-Date:   Sat Oct 31 12:00:00 2026
-
 Random numbers: [4844312, 5221473] and [[PubMed 33843667]] should be ignored.
 "#;
         let commits = extract_commits_from_text(text);
-        assert_eq!(commits.len(), 4);
+        assert_eq!(commits.len(), 2);
         assert_eq!(commits[0].0, "7f2a1b9");
         assert_eq!(
             commits[0].1.as_deref(),
             Some("fix: resolve race condition in token refresh")
         );
-        assert_eq!(commits[1].0, "0623bd8");
-        assert_eq!(commits[1].1, None);
-        assert_eq!(commits[2].0, "ca54746");
+        assert_eq!(commits[1].0, "ca54746");
         assert_eq!(
-            commits[2].1.as_deref(),
+            commits[1].1.as_deref(),
             Some("feat: implement oauth token exchange")
         );
-        assert_eq!(commits[3].0, "0feb3fdd929bcd6649e0e7c5a688cf7dd012ef21");
+    }
+
+    /// Quoting somebody's history is not authoring their commit, so nothing a
+    /// session *read* is credited to it - not a `git log` line, not a link.
+    #[test]
+    fn mentions_of_a_commit_are_not_authorship() {
+        let text = r#"
+commit 0feb3fdd929bcd6649e0e7c5a688cf7dd012ef21
+Author: Test <test@example.com>
+Date:   Sat Oct 31 12:00:00 2026
+    commit 7f2a1b9c8d0e1f2a3b4c5d6e7f8091a2b3c4d5e6
+    Merge: 1a2b3c4 5d6e7f8
+
+See https://github.com/AlexZander85/crypto/commit/0623bd8 for details.
+"#;
+        assert_eq!(extract_commits_from_text(text), Vec::new());
     }
 
     #[test]
@@ -5600,13 +5620,12 @@ Random numbers: [4844312, 5221473] and [[PubMed 33843667]] should be ignored.
 
         // 1. Exact match
         let res = find_session_by_commit(&conn, "7f2a1b9c8d0e1f").unwrap();
-        assert!(res.is_some());
-        assert_eq!(res.unwrap().session_id, "s1");
+        assert_eq!(res.len(), 1);
+        assert_eq!(res[0].session_id, "s1");
 
         // 2. Short SHA prefix of full SHA
         let res = find_session_by_commit(&conn, "7f2a1b9").unwrap();
-        assert!(res.is_some());
-        assert_eq!(res.unwrap().session_id, "s1");
+        assert_eq!(res[0].session_id, "s1");
 
         // 3. Stored is short SHA, query is full SHA
         conn.execute(
@@ -5614,14 +5633,30 @@ Random numbers: [4844312, 5221473] and [[PubMed 33843667]] should be ignored.
             []
         ).unwrap();
         let res = find_session_by_commit(&conn, "ca547461234567890abcdef").unwrap();
-        assert!(res.is_some());
-        assert_eq!(res.unwrap().session_id, "s1");
+        assert_eq!(res[0].session_id, "s1");
 
-        // 4. Unknown SHA
-        let res = find_session_by_commit(&conn, "fffffff").unwrap();
-        assert!(res.is_none());
+        // 4. Unknown SHA, and a non-hex string that would otherwise read as
+        // LIKE wildcards
+        assert!(find_session_by_commit(&conn, "fffffff").unwrap().is_empty());
+        assert!(find_session_by_commit(&conn, "s1%").unwrap().is_empty());
 
-        // 5. Get all commits for session
+        // 5. A SHA two sessions both claim comes back as both, newest first
+        conn.execute(
+            "INSERT INTO files(path, mtime, size, session_id, tool, project, title, started, msg_count, kind, reader)
+             VALUES('p2', 1, 1, 's2', 'claude-code', '/proj', 'Later chat', '2026-10-05T00:00:00+00:00', 3, 'main', 0)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO session_commits(session_id, commit_sha, message, timestamp) VALUES('s2', '7f2a1b9c8d0e1f', NULL, 1700000100)",
+            [],
+        )
+        .unwrap();
+        let res = find_session_by_commit(&conn, "7f2a1b9c8d0e1f").unwrap();
+        let ids: Vec<&str> = res.iter().map(|r| r.session_id.as_str()).collect();
+        assert_eq!(ids, vec!["s2", "s1"], "both candidates, newest first");
+
+        // 6. Get all commits for session
         let list = get_session_commits(&conn, "s1").unwrap();
         assert_eq!(list.len(), 2);
     }

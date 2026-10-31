@@ -244,6 +244,34 @@ pub fn run_git_blame(repo: &Path, file: &Path, range: Option<(usize, usize)>) ->
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
+/// The `AI-Session:` trailer our `prepare-commit-msg` hook writes, if this
+/// commit carries one: the session id that was talking when the commit was
+/// made. That is the exact attribution, so it wins over every timestamp
+/// overlap. No repository, no git, an unknown sha or a git too old for
+/// `%(trailers:key=)` all mean "no trailer".
+pub fn commit_session_trailer(repo: &Path, sha: &str) -> Option<String> {
+    let clean = sha.trim().to_ascii_lowercase();
+    if clean.len() < 7 || !clean.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
+    let out = git_command(repo)
+        .args([
+            "log",
+            "-1",
+            "--format=%(trailers:key=AI-Session,valueonly,unfold)",
+            "--end-of-options",
+            &clean,
+        ])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let raw = String::from_utf8_lossy(&out.stdout);
+    let id = raw.trim();
+    (!id.is_empty()).then(|| id.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

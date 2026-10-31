@@ -99,6 +99,35 @@ progress on the `fix/review-1.3` branch; this section grows as each phase lands.
 - New integration test `tests/reader_version_sweep.rs` covers a stale row being
   marked, a current row and an archived row being left alone, the mark being
   written once, and every tool sitting at the current version.
+- **A quoted commit was credited as your session's work**: `extract_commits_from_text`
+  also matched `/commit/<sha>` links and `commit <sha>` lines of `git log` /
+  `git show`, and it scanned the user's own messages too. Only the `git commit`
+  output that a session's *own* tool result produced is recorded now, so a chat
+  that pasted a colleague's history no longer claims those commits.
+- **`wikiagents commit <sha>` tells you how it knows**: the answer comes from
+  the commit's `AI-Session:` trailer when it has one (reported as exact), and
+  otherwise from the transcript heuristic. When several sessions claim one SHA,
+  they are all listed newest first — as «ambiguous» in the terminal and as
+  `candidates` in `--json` — instead of one being picked silently; the same list
+  is in `/api/commit`. A SHA is now also required to be hex, so a query can no
+  longer be read as `LIKE` wildcards.
+
+### Added
+- **`wikiagents hook install-git`** puts a two-line `prepare-commit-msg` hook in
+  a repository, and **`wikiagents hook prepare-commit-msg <file> [source]`**
+  appends `AI-Session: <session id>` to the message — from
+  `WIKIAGENTS_SESSION_ID` for any agent, or from `<.git>/wikiagents-session`,
+  which the SessionStart hook writes for Claude Code (and which is ignored after
+  12 hours). Merge and squash messages are left alone, an existing trailer is
+  never doubled, and the hook exits 0 whatever happens: a broken marker must not
+  stop a commit. A hook that is not ours is never overwritten — the command
+  prints the line to add instead. `wikiagents commit <sha>` reads that trailer
+  back with `git log -1 --format=%(trailers:key=AI-Session,valueonly)`, which
+  makes attribution a fact from the commit rather than a timestamp overlap.
+- New tests: `tests/commit_trailer.rs` (env id → trailer, no id / squash /
+  merge / missing file → message untouched, no duplicate trailer, real
+  `git commit` round trip through the installed hook, foreign hook preserved,
+  non-hex input rejected) and the extraction/lookup unit tests in `index.rs`.
 
 ## [1.2.1] - 2026-10-31 (WikiAgents)
 

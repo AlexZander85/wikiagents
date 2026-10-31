@@ -1,9 +1,14 @@
-//! The SessionStart recall hook: parse CC's stdin JSON, query the index for the
-//! launch project, and print a small fenced brief to stdout (injected into the
-//! agent context on exit 0). Empty output when there is no history. Untrusted
-//! session titles/paths are sanitized and fenced as DATA, never instructions.
+//! Two editor hooks. SessionStart: parse CC's stdin JSON, query the index for
+//! the launch project, and print a small fenced brief to stdout (injected into
+//! the agent context on exit 0); empty output when there is no history.
+//! prepare-commit-msg: tag the message with an `AI-Session:` trailer naming the
+//! session that is committing, which is what makes `wikiagents commit <sha>`
+//! exact instead of a guess. Both always exit 0 and never corrupt what they
+//! touch. Untrusted session titles/paths are sanitized and fenced as DATA,
+//! never instructions.
 
 use std::io::Read;
+use std::path::{Path, PathBuf};
 
 pub const FENCE_TAG: &str = "sessionwiki-recall";
 
@@ -127,6 +132,8 @@ pub fn session_start() {
         return;
     };
     let canon = canon.to_string_lossy().into_owned();
+    // This session is now the one that owns commits made in this repository.
+    write_session_marker(&canon, &session_id, "claude-code");
     let Ok(conn) = crate::index::open() else {
         return; // DB locked/corrupt -> empty, exit 0
     };
@@ -159,6 +166,170 @@ pub fn session_start() {
         })
         .collect();
     print!("{}", render_brief(&entries, &nonce));
+}
+
+/// A marker older than this belongs to a session that ended long ago; guessing
+/// with it would attribute today's commit to last week's chat.
+const MARKER_MAX_AGE_SECS: i64 = 12 * 3600;
+
+/// The `.git` directory of the repository containing `cwd`, as `git` itself
+/// reports it (absolute, or relative to `cwd`). None outside a repository.
+fn git_dir(cwd: &str) -> Option<PathBuf> {
+    let out = crate::backup::new_git_cmd()
+        .args(["-C", cwd, "rev-parse", "--git-dir"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let raw = String::from_utf8_lossy(&out.stdout);
+    let dir = raw.trim();
+    if dir.is_empty() {
+        return None;
+    }
+    let p = Path::new(dir);
+    Some(if p.is_absolute() {
+        p.to_path_buf()
+    } else {
+        Path::new(cwd).join(p)
+    })
+}
+
+/// Record the session that just started in `<git-dir>/wikiagents-session`, so
+/// the `prepare-commit-msg` hook can name it later. Git runs that hook with no
+/// idea an agent is talking to it, and it does not pass our environment through
+/// - a file inside the repository is the only channel both sides see.
+///
+/// Silent by design: this runs on every agent start and must never break it.
+fn write_session_marker(cwd: &str, session_id: &str, tool: &str) {
+    if session_id.is_empty() {
+        return;
+    }
+    let Some(dir) = git_dir(cwd) else { return };
+    let marker = serde_json::json!({
+        "session_id": session_id,
+        "tool": tool,
+        "ts": chrono::Utc::now().timestamp(),
+    });
+    let _ = std::fs::write(dir.join("wikiagents-session"), marker.to_string());
+}
+
+/// The session id from `<git-dir>/wikiagents-session`, if the file is ours,
+/// readable, and fresh.
+fn marker_session(git_dir: &Path) -> Option<String> {
+    let raw = std::fs::read_to_string(git_dir.join("wikiagents-session")).ok()?;
+    let value: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    let age = chrono::Utc::now().timestamp() - value.get("ts")?.as_i64()?;
+    // A future `ts` is as unusable as an old one: the file was not written by a
+    // session that is currently committing.
+    if !(0..=MARKER_MAX_AGE_SECS).contains(&age) {
+        return None;
+    }
+    clean_session_id(value.get("session_id")?.as_str()?)
+}
+
+/// Keep only characters a session id can contain, so a value read from the
+/// environment or from a repository file can never smuggle extra trailer lines
+/// (or newlines) into the commit message.
+fn clean_session_id(raw: &str) -> Option<String> {
+    let id = raw.trim();
+    if id.is_empty()
+        || id.len() > 100
+        || !id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | ':'))
+    {
+        return None;
+    }
+    Some(id.to_string())
+}
+
+/// The `prepare-commit-msg` git hook: tag the message with the session that is
+/// committing, so `wikiagents commit <sha>` answers from the commit itself
+/// instead of guessing from timestamps. Never fails: any problem leaves the
+/// message exactly as it was and exits 0, because a broken hook must not stop a
+/// commit.
+pub fn prepare_commit_msg(msg_file: &str, source: Option<&str>) {
+    // A merge or squash message describes commits somebody else made.
+    if matches!(source, Some("merge") | Some("squash")) {
+        return;
+    }
+    let Ok(body) = std::fs::read_to_string(msg_file) else {
+        return;
+    };
+    if body.contains("AI-Session:") {
+        return; // already attributed (amend, or a hook that ran twice)
+    }
+    // An agent that sets WIKIAGENTS_SESSION_ID knows best; otherwise ask the
+    // repository which session started here most recently.
+    let id = std::env::var("WIKIAGENTS_SESSION_ID")
+        .ok()
+        .and_then(|v| clean_session_id(&v))
+        .or_else(|| {
+            let cwd = std::env::current_dir().ok()?;
+            let git_dir = git_dir(&cwd.to_string_lossy())?;
+            marker_session(&git_dir)
+        });
+    let Some(id) = id else { return };
+    let _ = crate::backup::new_git_cmd()
+        .args([
+            "interpret-trailers",
+            "--in-place",
+            "--trailer",
+            &format!("AI-Session: {id}"),
+        ])
+        .arg(msg_file)
+        .status();
+}
+
+/// Where `hook install-git` put (or found) the prepare-commit-msg hook.
+pub enum HookInstall {
+    /// Written now.
+    Installed(PathBuf),
+    /// Ours, already there - not rewritten.
+    Already(PathBuf),
+    /// Somebody else's hook: left alone, to be merged by hand.
+    Foreign(PathBuf),
+}
+
+/// Install our `prepare-commit-msg` hook in the repository (default: current
+/// directory). The hook is a two-line `sh` script that calls back into this
+/// binary, so it follows the binary wherever it is installed.
+pub fn install_git_hook(repo: Option<&str>) -> anyhow::Result<HookInstall> {
+    let cwd = match repo {
+        Some(r) => std::path::PathBuf::from(r),
+        None => std::env::current_dir()?,
+    };
+    let Some(git_dir) = git_dir(&cwd.to_string_lossy()) else {
+        anyhow::bail!("{} is not a git repository", cwd.display());
+    };
+    let path = git_dir.join("hooks").join("prepare-commit-msg");
+    if let Ok(existing) = std::fs::read_to_string(&path) {
+        if existing.contains("hook prepare-commit-msg") {
+            return Ok(HookInstall::Already(path));
+        }
+        return Ok(HookInstall::Foreign(path));
+    }
+    // Absolute path, with forward slashes: git runs hooks under sh, where a
+    // backslash would be an escape.
+    let exe = std::env::current_exe()
+        .map(|p| p.to_string_lossy().replace('\\', "/"))
+        .unwrap_or_else(|_| "wikiagents".to_string());
+    let script = format!(
+        "#!/bin/sh\n\
+         # Installed by wikiagents: tag commits with the AI session that made them.\n\
+         \"{exe}\" hook prepare-commit-msg \"$1\" \"$2\" || true\n"
+    );
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    std::fs::write(&path, script)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755));
+    }
+    Ok(HookInstall::Installed(path))
 }
 
 #[cfg(test)]

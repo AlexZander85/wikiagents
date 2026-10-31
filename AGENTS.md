@@ -146,12 +146,31 @@ When operating from bash or PowerShell, invoke `agentwiki` directly:
 | `recall` | `agentwiki recall "<query>" [-n 5] [--json]` | Search and brief top matching session |
 | `search` | `agentwiki search "<query>" [--role user,assistant] [--json]` | Full-text search across conversations |
 | `trace` | `agentwiki trace <path>` | Find sessions that modified a file |
+| `blame` | `agentwiki blame <path> [-L START,END] [--json]` | Attribute each committed line range to the session behind it |
+| `commit` | `agentwiki commit <sha> [--json]` | Find the session that made a commit (exact via its `AI-Session:` trailer) |
 | `brief` | `agentwiki brief <id> [--max-chars 4000]` | Output a structured markdown briefing |
 | `show` | `agentwiki show <id> [--outline \| --window \| --json]` | View session transcript or digest |
 | `list` | `agentwiki list [-n 20] [--project <p>] [--json]` | List timeline of recent sessions |
 | `sync` | `agentwiki sync` | Manually trigger incremental store freshen |
 
 *Tip:* Every query command accepts `--no-sync` for instant responses querying only the already-built index.
+
+### AI Git Blame: exact mode
+
+`agentwiki commit <sha>` is a guess unless the commit says who made it. Install
+the marker once per repository:
+
+```bash
+wikiagents hook install-git            # or --repo <path>
+```
+
+Every commit then gets an `AI-Session: <id>` trailer, taken from
+`WIKIAGENTS_SESSION_ID` or from the SessionStart marker in `.git/`, and
+`agentwiki commit <sha>` reports it as `AI-Session trailer (exact)`. Without a
+trailer, only sessions whose *own tool output* contains the `git commit` result
+are candidates — quoting someone else's `git log` or a commit URL no longer
+credits your session with their commit, and several candidates are reported as
+ambiguous instead of one being chosen silently.
 
 ---
 

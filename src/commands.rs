@@ -1918,7 +1918,10 @@ pub fn blame_runs(
             .entry(r.commit.clone())
             .or_insert_with(|| {
                 // Check exact commit attribution first: was this commit generated inside an AI session?
-                if let Ok(Some(srow)) = index::find_session_by_commit(conn, &r.commit) {
+                let attributed = index::find_session_by_commit(conn, &r.commit)
+                    .ok()
+                    .and_then(|rows| rows.into_iter().next());
+                if let Some(srow) = attributed {
                     let sess = crate::blame::TouchingSession {
                         session_id: srow.session_id,
                         tool: srow.tool,
@@ -2365,74 +2368,158 @@ pub fn backup_cmd(
     Ok(())
 }
 
-/// Find the AI session responsible for a Git commit SHA (AI Git Blame)
+/// Find the AI session responsible for a Git commit (AI Git Blame).
+///
+/// An `AI-Session:` trailer written by our `prepare-commit-msg` hook is the
+/// exact answer and is used first; without it, the sessions recorded as having
+/// made this SHA are listed, newest first - and more than one is reported as
+/// ambiguous rather than guessed at.
 pub fn commit_cmd(sha: &str, json: bool, no_sync: bool) -> Result<()> {
+    let cwd = std::env::current_dir().unwrap_or_default();
+    let trailer = crate::blame::commit_session_trailer(&cwd, sha);
     let mut conn = index::open()?;
     if !no_sync {
         index::sync(&mut conn, None)?;
     }
-    let row_opt = index::find_session_by_commit(&conn, sha)?;
-    match row_opt {
-        Some(row) => {
-            let commits = index::get_session_commits(&conn, &row.session_id).unwrap_or_default();
-            let matched_commit = commits
-                .iter()
-                .find(|(c, _, _)| c.starts_with(sha) || sha.starts_with(c));
-            if json {
-                let v = serde_json::json!({
-                    "commit": sha,
-                    "session_id": row.session_id,
-                    "tool": row.tool,
-                    "title": row.title,
-                    "project": row.project,
-                    "started": row.started,
-                    "last_active": row.last_active,
-                    "archived": row.archived,
-                    "commit_message": matched_commit.and_then(|(_, m, _)| m.as_deref()),
-                });
-                println!("{}", serde_json::to_string_pretty(&v)?);
-            } else {
-                println!("{} {}", green("✓ AI Session found for commit"), bold(sha));
-                println!("  {} {}", dim("Session ID:"), yellow(&row.session_id));
-                println!("  {} {}", dim("Tool:      "), cyan(&row.tool));
-                println!("  {} {}", dim("Title:     "), bold(&row.title));
-                println!("  {} {}", dim("Project:   "), row.project);
-                if let Some((_, Some(msg), _)) = matched_commit {
-                    println!("  {} {}", dim("Message:   "), msg);
-                }
-                if let Some(started) = &row.started {
-                    println!("  {} {}", dim("Started:   "), started);
-                }
-                if row.archived {
-                    println!("  {} {}", dim("Status:    "), yellow("[archived]"));
-                }
-                println!();
-                println!(
-                    "{}",
-                    dim(&format!(
-                        "View full transcript: wikiagents show {}  (or run `wikiagents ui`)",
-                        &row.session_id[..row.session_id.len().min(12)]
-                    ))
-                );
-            }
-            Ok(())
+    // A trailer that names a session we never indexed is no answer at all.
+    let exact = trailer
+        .as_deref()
+        .map(|id| index::resolve(&conn, id))
+        .transpose()?
+        .filter(|rows| !rows.is_empty());
+    let (rows, source) = match exact {
+        Some(rows) => (rows, "trailer"),
+        None => (index::find_session_by_commit(&conn, sha)?, "heuristic"),
+    };
+    let Some(row) = rows.first() else {
+        if json {
+            println!(
+                "{}",
+                serde_json::json!({ "error": "not found", "commit": sha })
+            );
+        } else {
+            eprintln!("{} No AI session found for commit {}", yellow("Note:"), sha);
+            eprintln!(
+                "{}",
+                dim("This commit may have been created manually, or outside indexed AI sessions.")
+            );
+            eprintln!(
+                "{}",
+                dim("Run `wikiagents hook install-git` in this repository to attribute future commits exactly.")
+            );
         }
-        None => {
-            if json {
-                println!(
-                    "{}",
-                    serde_json::json!({ "error": "not found", "commit": sha })
-                );
-            } else {
-                eprintln!("{} No AI session found for commit {}", yellow("Note:"), sha);
-                eprintln!(
-                    "{}",
-                    dim("This commit may have been created manually, or outside indexed AI sessions.")
-                );
-            }
-            Ok(())
+        return Ok(());
+    };
+
+    let commits = index::get_session_commits(&conn, &row.session_id).unwrap_or_default();
+    let matched_commit = commits
+        .iter()
+        .find(|(c, _, _)| c.starts_with(sha) || sha.starts_with(c));
+
+    if json {
+        let brief = |r: &index::SessionRow| {
+            serde_json::json!({
+                "session_id": r.session_id,
+                "tool": r.tool,
+                "title": r.title,
+                "project": r.project,
+                "started": r.started,
+                "last_active": r.last_active,
+                "archived": r.archived,
+            })
+        };
+        let mut v = brief(row);
+        v["commit"] = serde_json::json!(sha);
+        v["source"] = serde_json::json!(source);
+        v["commit_message"] = serde_json::json!(matched_commit.and_then(|(_, m, _)| m.as_deref()));
+        if rows.len() > 1 {
+            v["candidates"] = serde_json::json!(rows.iter().map(brief).collect::<Vec<_>>());
+        }
+        println!("{}", serde_json::to_string_pretty(&v)?);
+        return Ok(());
+    }
+
+    println!("{} {}", green("✓ AI Session found for commit"), bold(sha));
+    println!("  {} {}", dim("Session ID:"), yellow(&row.session_id));
+    println!("  {} {}", dim("Tool:      "), cyan(&row.tool));
+    println!("  {} {}", dim("Title:     "), bold(&row.title));
+    println!("  {} {}", dim("Project:   "), row.project);
+    println!(
+        "  {} {}",
+        dim("Source:    "),
+        if source == "trailer" {
+            green("AI-Session trailer (exact)")
+        } else {
+            yellow("commit mentioned in the transcript (heuristic)")
+        }
+    );
+    if let Some((_, Some(msg), _)) = matched_commit {
+        println!("  {} {}", dim("Message:   "), msg);
+    }
+    if let Some(started) = &row.started {
+        println!("  {} {}", dim("Started:   "), started);
+    }
+    if row.archived {
+        println!("  {} {}", dim("Status:    "), yellow("[archived]"));
+    }
+    if rows.len() > 1 {
+        println!();
+        println!(
+            "{} {} sessions claim this commit - the match is ambiguous:",
+            yellow("!"),
+            rows.len()
+        );
+        for other in &rows[1..] {
+            println!(
+                "  {} {} · {} · {}",
+                dim("-"),
+                yellow(&other.session_id),
+                cyan(&other.tool),
+                other.title
+            );
+        }
+        println!(
+            "{}",
+            dim("  (newest first; install `wikiagents hook install-git` to make future commits exact)")
+        );
+    }
+    println!();
+    println!(
+        "{}",
+        dim(&format!(
+            "View full transcript: wikiagents show {}  (or run `wikiagents ui`)",
+            &row.session_id[..row.session_id.len().min(12)]
+        ))
+    );
+    Ok(())
+}
+
+/// `wikiagents hook install-git`: record which AI session made each commit.
+pub fn hook_install_git(repo: Option<&str>) -> Result<()> {
+    match crate::hook::install_git_hook(repo)? {
+        crate::hook::HookInstall::Installed(path) => {
+            println!("✓ Hook installed: {}", path.display());
+            println!(
+                "{}",
+                dim("Commits made from an AI session now carry an `AI-Session:` trailer.")
+            );
+        }
+        crate::hook::HookInstall::Already(path) => {
+            println!("✓ Already installed: {}", path.display());
+        }
+        crate::hook::HookInstall::Foreign(path) => {
+            println!(
+                "{} {} belongs to another tool; it was left untouched.",
+                yellow("Note:"),
+                path.display()
+            );
+            println!(
+                "Add this line to it where a git hook can see the message file, then keep its own work:",
+            );
+            println!("  wikiagents hook prepare-commit-msg \"$1\" \"$2\" || true");
         }
     }
+    Ok(())
 }
 
 #[cfg(test)]
