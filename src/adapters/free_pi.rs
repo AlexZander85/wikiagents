@@ -70,7 +70,8 @@ fn discover_sessions(dirs: &[PathBuf]) -> Discovered {
             .into_iter()
             .filter_map(|e| ok_or_flag(e, &mut had_error))
         {
-            if entry.file_type().is_file() && entry.path().extension().is_some_and(|x| x == "jsonl") {
+            if entry.file_type().is_file() && entry.path().extension().is_some_and(|x| x == "jsonl")
+            {
                 out.push(entry.into_path());
             }
         }
@@ -276,7 +277,11 @@ fn parse_jsonl(tool: &'static str, path: &Path) -> Result<Session> {
     })
 }
 
-fn parse_edit_event(name: &str, args: Option<&Value>, ts: Option<DateTime<Utc>>) -> Option<EditEvent> {
+fn parse_edit_event(
+    name: &str,
+    args: Option<&Value>,
+    ts: Option<DateTime<Utc>>,
+) -> Option<EditEvent> {
     let args = args?;
     let path = clean_path(args.get("path").and_then(Value::as_str)?)?;
 
@@ -397,7 +402,10 @@ mod tests {
         assert_eq!(session.edits[0].snippet, "pub fn feature() {}");
         assert_eq!(session.edits[1].kind, EditKind::Edit);
         assert_eq!(session.edits[1].path, "src/feature.rs");
-        assert_eq!(session.edits[1].snippet, "pub fn feature() -> bool { true }");
+        assert_eq!(
+            session.edits[1].snippet,
+            "pub fn feature() -> bool { true }"
+        );
 
         assert_eq!(session.messages.len(), 5);
         assert_eq!(session.messages[0].role, Role::User);

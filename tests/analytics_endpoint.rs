@@ -50,23 +50,42 @@ fn analytics_endpoint_returns_main_sessions_and_period_files() {
 
     let deadline = Instant::now() + Duration::from_secs(5);
     let mut stream = loop {
-        assert!(child.0.try_wait().unwrap().is_none(), "web server exited unexpectedly");
+        assert!(
+            child.0.try_wait().unwrap().is_none(),
+            "web server exited unexpectedly"
+        );
         if let Ok(stream) = TcpStream::connect(address) {
             break stream;
         }
-        assert!(Instant::now() < deadline, "web server did not start in time");
+        assert!(
+            Instant::now() < deadline,
+            "web server did not start in time"
+        );
         std::thread::sleep(Duration::from_millis(20));
     };
 
-    stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
-    stream.set_write_timeout(Some(Duration::from_secs(5))).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    stream
+        .set_write_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
 
     let get = |stream: &mut TcpStream, path: &str| -> serde_json::Value {
-        write!(stream, "GET {path} HTTP/1.1\r\nHost: {address}\r\nConnection: close\r\n\r\n").unwrap();
+        write!(
+            stream,
+            "GET {path} HTTP/1.1\r\nHost: {address}\r\nConnection: close\r\n\r\n"
+        )
+        .unwrap();
         let mut response = String::new();
         stream.read_to_string(&mut response).unwrap();
-        assert!(response.starts_with("HTTP/1.1 200 "), "expected 200 OK, got: {response}");
-        let (_, body) = response.split_once("\r\n\r\n").expect("HTTP headers separator");
+        assert!(
+            response.starts_with("HTTP/1.1 200 "),
+            "expected 200 OK, got: {response}"
+        );
+        let (_, body) = response
+            .split_once("\r\n\r\n")
+            .expect("HTTP headers separator");
         serde_json::from_str(body).expect("valid JSON response")
     };
 
@@ -81,7 +100,9 @@ fn analytics_endpoint_returns_main_sessions_and_period_files() {
     assert_eq!(json["totals"]["touched_files"], 1);
 
     let mut stream = TcpStream::connect(address).unwrap();
-    stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
     let files = get(
         &mut stream,
         "/api/analytics/files?since=2026-10-24T00:00:00Z&until=2026-10-25T23:59:59Z",
@@ -91,7 +112,12 @@ fn analytics_endpoint_returns_main_sessions_and_period_files() {
         serde_json::json!([{"path": "src/lib.rs", "sessions": 1, "edits": 1}])
     );
     let mut stream = TcpStream::connect(address).unwrap();
-    stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
-    let none = get(&mut stream, "/api/analytics/files?since=2026-10-26T00:00:00Z");
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    let none = get(
+        &mut stream,
+        "/api/analytics/files?since=2026-10-26T00:00:00Z",
+    );
     assert_eq!(none, serde_json::json!([]));
 }

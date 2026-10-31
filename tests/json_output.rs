@@ -67,7 +67,7 @@ fn strip_snippet_controls_drops_esc_keeps_fts_markers() {
 
 #[test]
 fn session_row_json_has_pinned_fields() {
-    let _g = LOCK.lock().unwrap();
+    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let conn = fresh();
     seed(&conn, "s1");
     index::add_tag(&conn, "s1", "auth").unwrap();
@@ -123,7 +123,7 @@ fn session_row_json_has_pinned_fields() {
 
 #[test]
 fn native_id_surfaces_in_list_json_for_a_rollout_path() {
-    let _g = LOCK.lock().unwrap();
+    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let conn = fresh();
     // A real Codex rollout path: the native uuid trails the timestamp.
     let path = "/home/u/.codex/sessions/2025/05/13/rollout-2025-05-13T18-19-30-0a000000-0000-4000-8000-000000000001.jsonl";
@@ -142,7 +142,7 @@ fn native_id_surfaces_in_list_json_for_a_rollout_path() {
 
 #[test]
 fn null_tags_serialize_as_null_not_empty_array() {
-    let _g = LOCK.lock().unwrap();
+    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let conn = fresh();
     seed(&conn, "s2"); // no tags
     let rows = index::recent(&conn, 10, None, None, None, false).unwrap();
@@ -152,7 +152,7 @@ fn null_tags_serialize_as_null_not_empty_array() {
 
 #[test]
 fn search_hit_serializes_with_snippet_and_role() {
-    let _g = LOCK.lock().unwrap();
+    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let conn = fresh();
     seed(&conn, "s3");
     conn.execute(
@@ -195,7 +195,7 @@ fn search_hit_serializes_with_snippet_and_role() {
 
 #[test]
 fn brief_json_object_shape() {
-    let _g = LOCK.lock().unwrap();
+    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let conn = fresh();
     seed(&conn, "s4");
     let row = index::resolve(&conn, "s4")
@@ -250,7 +250,7 @@ fn isolated_sessionwiki(
 
 #[test]
 fn brief_and_summarizer_redact_reparsed_source_while_show_stays_raw() {
-    let _g = LOCK.lock().unwrap();
+    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let t = tempfile::tempdir().unwrap();
     let data = t.path().join("data");
     let home = t.path().join("home");

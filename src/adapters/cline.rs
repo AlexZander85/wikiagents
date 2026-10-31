@@ -609,7 +609,6 @@ fn push(messages: &mut Vec<Message>, role: Role, text: &str) {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
 
     #[test]
     #[cfg(unix)]

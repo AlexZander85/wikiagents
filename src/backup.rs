@@ -74,15 +74,27 @@ impl BackupProgress {
     }
 }
 
+impl Default for BackupProgress {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 static BACKUP_PROGRESS: std::sync::Mutex<BackupProgress> =
     std::sync::Mutex::new(BackupProgress::new());
 
 pub fn get_progress() -> BackupProgress {
-    BACKUP_PROGRESS.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    BACKUP_PROGRESS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
 }
 
 pub fn is_running() -> bool {
-    BACKUP_PROGRESS.lock().unwrap_or_else(|e| e.into_inner()).is_running
+    BACKUP_PROGRESS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .is_running
 }
 
 pub fn set_progress<F>(f: F)
@@ -120,8 +132,7 @@ pub struct ConnectionTestResult {
 /// Retrieve backup configuration from the index meta table.
 pub fn get_backup_config(conn: &Connection) -> Result<BackupConfig> {
     let repo_url = get_meta(conn, REPO_URL_KEY)?.unwrap_or_default();
-    let last_backup_at = get_meta(conn, LAST_BACKUP_KEY)?
-        .and_then(|s| s.parse::<i64>().ok());
+    let last_backup_at = get_meta(conn, LAST_BACKUP_KEY)?.and_then(|s| s.parse::<i64>().ok());
     let last_commit = get_meta(conn, LAST_COMMIT_KEY)?;
     let last_status = get_meta(conn, LAST_STATUS_KEY)?;
 
@@ -168,13 +179,11 @@ pub fn test_connection(repo_url: &str) -> ConnectionTestResult {
         };
     }
 
-    match new_git_cmd()
-        .args(["ls-remote", repo_url.trim()])
-        .output()
-    {
+    match new_git_cmd().args(["ls-remote", repo_url.trim()]).output() {
         Ok(output) if output.status.success() => ConnectionTestResult {
             ok: true,
-            message: "Подключение успешно! Доступ к приватному репозиторию подтвержден.".to_string(),
+            message: "Подключение успешно! Доступ к приватному репозиторию подтвержден."
+                .to_string(),
             git_version,
             git_user,
         },
@@ -249,26 +258,60 @@ pub fn run_backup(conn: &Connection, repo_url: &str) -> Result<BackupReport> {
 
         // 1. Initialize or configure git repo in backup_dir
         ensure_git_repo(&backup_dir, repo_url)?;
-        log_step(1, "Git-репозиторий настроен", "[1/5] Проверка Git-репозитория... OK");
+        log_step(
+            1,
+            "Git-репозиторий настроен",
+            "[1/5] Проверка Git-репозитория... OK",
+        );
 
         // 2. Export curated tables
-        log_step(2, "Экспорт метаданных и заметок...", "[2/5] Экспорт избранного, заметок, тегов и сниппетов...");
+        log_step(
+            2,
+            "Экспорт метаданных и заметок...",
+            "[2/5] Экспорт избранного, заметок, тегов и сниппетов...",
+        );
         let curated_dir = backup_dir.join("curated");
         fs::create_dir_all(&curated_dir)?;
         let curated_count = export_curated_tables(conn, &curated_dir)?;
-        log_step(2, "Метаданные экспортированы", &format!("[2/5] Экспорт метаданных и сниппетов ({} записей)... OK", curated_count));
+        log_step(
+            2,
+            "Метаданные экспортированы",
+            &format!(
+                "[2/5] Экспорт метаданных и сниппетов ({} записей)... OK",
+                curated_count
+            ),
+        );
 
         // 3. Export web session files (with 45MB chunking)
-        log_step(3, "Экспорт веб-чатов...", "[3/5] Экспорт веб-чатов (Claude, DeepSeek, Gemini, Qwen, GLM)...");
+        log_step(
+            3,
+            "Экспорт веб-чатов...",
+            "[3/5] Экспорт веб-чатов (Claude, DeepSeek, Gemini, Qwen, GLM)...",
+        );
         let web_dir = backup_dir.join("web_session");
         fs::create_dir_all(&web_dir)?;
         let web_count = export_web_session_files(&web_dir)?;
-        log_step(3, "Веб-чаты экспортированы", &format!("[3/5] Экспорт веб-чатов ({} файлов)... OK", web_count));
+        log_step(
+            3,
+            "Веб-чаты экспортированы",
+            &format!("[3/5] Экспорт веб-чатов ({} файлов)... OK", web_count),
+        );
 
         // 4. Export granular sessions (sessions/<tool>/<session_id>.json)
-        log_step(4, "Инкрементальный экспорт сессий...", "[4/5] Проверка сессий IDE-агентов (инкрементально)...");
+        log_step(
+            4,
+            "Инкрементальный экспорт сессий...",
+            "[4/5] Проверка сессий IDE-агентов (инкрементально)...",
+        );
         let (total_s, newly_written) = export_granular_sessions(conn, &backup_dir)?;
-        log_step(4, "Сессии сохранены", &format!("[4/5] Экспорт сессий... OK (всего: {}, новых/обновленных: {})", total_s, newly_written));
+        log_step(
+            4,
+            "Сессии сохранены",
+            &format!(
+                "[4/5] Экспорт сессий... OK (всего: {}, новых/обновленных: {})",
+                total_s, newly_written
+            ),
+        );
 
         // 5. Generate manifest, README and restore scripts
         let (total_sessions, tool_stats) = query_session_stats(conn)?;
@@ -276,17 +319,20 @@ pub fn run_backup(conn: &Connection, repo_url: &str) -> Result<BackupReport> {
         write_restore_scripts(&backup_dir)?;
 
         // 6. Git commit and push
-        log_step(5, "Отправка на GitHub (git push)...", "[5/5] Подготовка коммита и отправка в GitHub (git push)...");
+        log_step(
+            5,
+            "Отправка на GitHub (git push)...",
+            "[5/5] Подготовка коммита и отправка в GitHub (git push)...",
+        );
         run_git_cmd(&backup_dir, &["add", "-A"])?;
 
         let status = run_git_cmd(&backup_dir, &["status", "--porcelain"])?;
         let commit_hash;
-        let message;
 
-        if status.is_empty() {
+        let message = if status.is_empty() {
             commit_hash = run_git_cmd(&backup_dir, &["rev-parse", "--short", "HEAD"]).ok();
             let _ = run_git_cmd(&backup_dir, &["push", "-u", "origin", "main"]);
-            message = "Данные уже синхронизированы с GitHub, изменений нет.".to_string();
+            "Данные уже синхронизированы с GitHub, изменений нет.".to_string()
         } else {
             let commit_msg = format!(
                 "wikiagents backup: {} ({} new/updated, {} total across {} tools)",
@@ -305,7 +351,8 @@ pub fn run_backup(conn: &Connection, repo_url: &str) -> Result<BackupReport> {
                 if push_res.is_err() {
                     for attempt in 1..=3 {
                         std::thread::sleep(std::time::Duration::from_secs(2 * attempt));
-                        push_res = run_git_cmd(&backup_dir, &["push", "-u", "origin", "main", "--force"]);
+                        push_res =
+                            run_git_cmd(&backup_dir, &["push", "-u", "origin", "main", "--force"]);
                         if push_res.is_ok() {
                             break;
                         }
@@ -313,13 +360,13 @@ pub fn run_backup(conn: &Connection, repo_url: &str) -> Result<BackupReport> {
                 }
             }
             push_res?;
-            message = format!(
+            format!(
                 "Успешно выгружено в GitHub! Коммит: {}, выгружено сессий: {} (всего: {})",
                 commit_hash.as_deref().unwrap_or(""),
                 newly_written,
                 total_sessions
-            );
-        }
+            )
+        };
 
         // 7. Save metadata in index
         set_meta(conn, REPO_URL_KEY, repo_url)?;
@@ -331,7 +378,11 @@ pub fn run_backup(conn: &Connection, repo_url: &str) -> Result<BackupReport> {
 
         let total_files = count_files_in_dir(&backup_dir)?;
         let hash_str = commit_hash.as_deref().unwrap_or("");
-        log_step(5, "Готово", &format!("[5/5] УСПЕШНО! Выгружено в GitHub! Коммит: {}", hash_str));
+        log_step(
+            5,
+            "Готово",
+            &format!("[5/5] УСПЕШНО! Выгружено в GitHub! Коммит: {}", hash_str),
+        );
 
         Ok(BackupReport {
             success: true,
@@ -388,22 +439,49 @@ pub fn run_restore(conn: &mut Connection, repo_url: &str) -> Result<usize> {
         let _ = run_git_cmd(&backup_dir, &["fetch", "origin", "main"]);
         let _ = run_git_cmd(&backup_dir, &["checkout", "-B", "main", "origin/main"]);
         let _ = run_git_cmd(&backup_dir, &["pull", "origin", "main"]);
-        log_step(1, "Репозиторий обновлен", "[1/4] Подключение к GitHub и git pull... OK");
+        log_step(
+            1,
+            "Репозиторий обновлен",
+            "[1/4] Подключение к GitHub и git pull... OK",
+        );
 
         // 2. Restore curated
-        log_step(2, "Восстановление метаданных...", "[2/4] Восстановление заметок, тегов, избранного и сниппетов...");
+        log_step(
+            2,
+            "Восстановление метаданных...",
+            "[2/4] Восстановление заметок, тегов, избранного и сниппетов...",
+        );
         restore_curated_tables(conn, &backup_dir.join("curated"))?;
-        log_step(2, "Метаданные восстановлены", "[2/4] Восстановление метаданных и заметок... OK");
+        log_step(
+            2,
+            "Метаданные восстановлены",
+            "[2/4] Восстановление метаданных и заметок... OK",
+        );
 
         // 3. Restore granular sessions
-        log_step(3, "Восстановление сессий...", "[3/4] Восстановление сессий агентов из sessions/...");
+        log_step(
+            3,
+            "Восстановление сессий...",
+            "[3/4] Восстановление сессий агентов из sessions/...",
+        );
         let total = restore_granular_sessions(conn, &backup_dir.join("sessions"))?;
-        log_step(3, "Сессии восстановлены", &format!("[3/4] Восстановление сессий... OK (всего: {})", total));
+        log_step(
+            3,
+            "Сессии восстановлены",
+            &format!("[3/4] Восстановление сессий... OK (всего: {})", total),
+        );
 
         // 4. Update local meta
         set_meta(conn, REPO_URL_KEY, repo_url)?;
         set_meta(conn, LAST_STATUS_KEY, "ok")?;
-        log_step(4, "Готово", &format!("[4/4] УСПЕШНО! Восстановлено {} сессий из GitHub бэкапа.", total));
+        log_step(
+            4,
+            "Готово",
+            &format!(
+                "[4/4] УСПЕШНО! Восстановлено {} сессий из GitHub бэкапа.",
+                total
+            ),
+        );
 
         Ok(total)
     })();
@@ -465,9 +543,8 @@ fn run_git_cmd(dir: &Path, args: &[&str]) -> Result<String> {
 
 fn export_curated_tables(conn: &Connection, dest_dir: &Path) -> Result<usize> {
     // 1. Favorites
-    let mut fav_stmt = conn.prepare(
-        "SELECT session_id, created_at FROM favorites ORDER BY created_at DESC",
-    )?;
+    let mut fav_stmt =
+        conn.prepare("SELECT session_id, created_at FROM favorites ORDER BY created_at DESC")?;
     let fav_rows: Vec<Value> = fav_stmt
         .query_map([], |r| {
             Ok(json!({
@@ -499,9 +576,8 @@ fn export_curated_tables(conn: &Connection, dest_dir: &Path) -> Result<usize> {
     )?;
 
     // 3. Notes
-    let mut notes_stmt = conn.prepare(
-        "SELECT session_id, note, updated FROM notes ORDER BY updated DESC",
-    )?;
+    let mut notes_stmt =
+        conn.prepare("SELECT session_id, note, updated FROM notes ORDER BY updated DESC")?;
     let note_rows: Vec<Value> = notes_stmt
         .query_map([], |r| {
             Ok(json!({
@@ -545,9 +621,8 @@ fn export_curated_tables(conn: &Connection, dest_dir: &Path) -> Result<usize> {
     )?;
 
     // 5. Summaries
-    let mut sum_stmt = conn.prepare(
-        "SELECT session_id, summary, created, kind FROM summaries ORDER BY session_id",
-    )?;
+    let mut sum_stmt = conn
+        .prepare("SELECT session_id, summary, created, kind FROM summaries ORDER BY session_id")?;
     let sum_rows: Vec<Value> = sum_stmt
         .query_map([], |r| {
             Ok(json!({
@@ -564,7 +639,8 @@ fn export_curated_tables(conn: &Connection, dest_dir: &Path) -> Result<usize> {
         serde_json::to_string_pretty(&sum_rows)?,
     )?;
 
-    let total = fav_rows.len() + tag_rows.len() + note_rows.len() + snip_rows.len() + sum_rows.len();
+    let total =
+        fav_rows.len() + tag_rows.len() + note_rows.len() + snip_rows.len() + sum_rows.len();
     Ok(total)
 }
 
@@ -746,14 +822,11 @@ fn export_granular_sessions(conn: &Connection, dest_dir: &Path) -> Result<(usize
     let mut newly_written = 0;
 
     let mut msg_stmt = conn.prepare(
-        "SELECT role, text, full_text, is_rewound FROM messages WHERE session_id = ?1 ORDER BY id"
+        "SELECT role, text, full_text, is_rewound FROM messages WHERE session_id = ?1 ORDER BY id",
     )?;
-    let mut touched_stmt = conn.prepare(
-        "SELECT path FROM touched WHERE session_id = ?1"
-    )?;
-    let mut commits_stmt = conn.prepare(
-        "SELECT commit_sha FROM session_commits WHERE session_id = ?1"
-    )?;
+    let mut touched_stmt = conn.prepare("SELECT path FROM touched WHERE session_id = ?1")?;
+    let mut commits_stmt =
+        conn.prepare("SELECT commit_sha FROM session_commits WHERE session_id = ?1")?;
 
     for row in &rows {
         let tool_safe = safe_file_component(&row.tool);
@@ -1011,9 +1084,8 @@ fn restore_curated_tables(conn: &Connection, curated_dir: &Path) -> Result<()> {
     if tags_path.exists() {
         if let Ok(data) = fs::read_to_string(&tags_path) {
             if let Ok(rows) = serde_json::from_str::<Vec<Value>>(&data) {
-                let mut stmt = conn.prepare(
-                    "INSERT OR REPLACE INTO tags (session_id, tag) VALUES (?1, ?2)",
-                )?;
+                let mut stmt =
+                    conn.prepare("INSERT OR REPLACE INTO tags (session_id, tag) VALUES (?1, ?2)")?;
                 for r in rows {
                     let sid = r.get("session_id").and_then(|v| v.as_str());
                     let tag = r.get("tag").and_then(|v| v.as_str());
@@ -1087,7 +1159,9 @@ fn restore_curated_tables(conn: &Connection, curated_dir: &Path) -> Result<()> {
                     let role = r.get("role").and_then(|v| v.as_str());
                     let mts = r.get("message_ts").and_then(|v| v.as_i64());
                     if let (Some(i), Some(s)) = (id, sid) {
-                        let _ = stmt.execute(rusqlite::params![i, s, midx, title, lang, content, tags, created, tool, role, mts]);
+                        let _ = stmt.execute(rusqlite::params![
+                            i, s, midx, title, lang, content, tags, created, tool, role, mts
+                        ]);
                     }
                 }
             }
@@ -1107,10 +1181,10 @@ fn restore_granular_sessions(conn: &mut Connection, sessions_dir: &Path) -> Resu
         .into_iter()
         .filter_map(Result::ok)
     {
-        if entry.file_type().is_file() {
-            if entry.path().extension().and_then(|s| s.to_str()) == Some("json") {
-                session_paths.push(entry.path().to_path_buf());
-            }
+        if entry.file_type().is_file()
+            && entry.path().extension().and_then(|s| s.to_str()) == Some("json")
+        {
+            session_paths.push(entry.path().to_path_buf());
         }
     }
 
@@ -1128,14 +1202,13 @@ fn restore_granular_sessions(conn: &mut Connection, sessions_dir: &Path) -> Resu
         let mut msg_stmt = tx.prepare(
             "INSERT INTO messages (session_id, role, text, full_text, is_rewound) VALUES (?1, ?2, ?3, ?4, ?5)"
         )?;
-        let mut fts_stmt = tx.prepare(
-            "INSERT INTO msgs (session_id, text) VALUES (?1, ?2)"
-        ).ok();
-        let mut touched_stmt = tx.prepare(
-            "INSERT OR IGNORE INTO touched (session_id, path) VALUES (?1, ?2)"
-        )?;
+        let mut fts_stmt = tx
+            .prepare("INSERT INTO msgs (session_id, text) VALUES (?1, ?2)")
+            .ok();
+        let mut touched_stmt =
+            tx.prepare("INSERT OR IGNORE INTO touched (session_id, path) VALUES (?1, ?2)")?;
         let mut commits_stmt = tx.prepare(
-            "INSERT OR IGNORE INTO session_commits (session_id, commit_sha) VALUES (?1, ?2)"
+            "INSERT OR IGNORE INTO session_commits (session_id, commit_sha) VALUES (?1, ?2)",
         )?;
 
         for path in session_paths {
@@ -1165,7 +1238,8 @@ fn restore_granular_sessions(conn: &mut Connection, sessions_dir: &Path) -> Resu
             let fake_path = format!("restored://{tool}/{sid}");
 
             let _ = file_stmt.execute(rusqlite::params![
-                fake_path, mtime, msg_count, sid, tool, project, title, started, ended, msg_count, kind, parent_id
+                fake_path, mtime, msg_count, sid, tool, project, title, started, ended, msg_count,
+                kind, parent_id
             ]);
 
             if let Some(msgs) = msgs {
@@ -1173,9 +1247,18 @@ fn restore_granular_sessions(conn: &mut Connection, sessions_dir: &Path) -> Resu
                     let role = m.get("role").and_then(|v| v.as_str()).unwrap_or("user");
                     let text = m.get("text").and_then(|v| v.as_str()).unwrap_or("");
                     let full_text = m.get("full_text").and_then(|v| v.as_str());
-                    let is_rewound = if m.get("is_rewound").and_then(|v| v.as_bool()).unwrap_or(false) { 1 } else { 0 };
+                    let is_rewound = if m
+                        .get("is_rewound")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false)
+                    {
+                        1
+                    } else {
+                        0
+                    };
 
-                    let _ = msg_stmt.execute(rusqlite::params![sid, role, text, full_text, is_rewound]);
+                    let _ =
+                        msg_stmt.execute(rusqlite::params![sid, role, text, full_text, is_rewound]);
                     if let Some(ref mut fts) = fts_stmt {
                         let _ = fts.execute(rusqlite::params![sid, text]);
                     }
@@ -1210,9 +1293,8 @@ fn restore_granular_sessions(conn: &mut Connection, sessions_dir: &Path) -> Resu
 fn query_session_stats(conn: &Connection) -> Result<(i64, BTreeMap<String, i64>)> {
     let total: i64 = conn.query_row("SELECT count(*) FROM files", [], |r| r.get(0))?;
 
-    let mut stmt = conn.prepare(
-        "SELECT tool, count(*) FROM files GROUP BY tool ORDER BY count(*) DESC",
-    )?;
+    let mut stmt =
+        conn.prepare("SELECT tool, count(*) FROM files GROUP BY tool ORDER BY count(*) DESC")?;
     let mut stats = BTreeMap::new();
     let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?;
 
@@ -1315,24 +1397,31 @@ fn set_meta(conn: &Connection, key: &str, value: &str) -> Result<()> {
     Ok(())
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use rusqlite::Connection;
-    
+
     #[test]
     fn test_backup_config_roundtrip() {
         let conn = Connection::open_in_memory().unwrap();
-        conn.execute("CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT)", []).unwrap();
+        conn.execute("CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT)", [])
+            .unwrap();
 
         let cfg = get_backup_config(&conn).unwrap();
         assert_eq!(cfg.repo_url, "");
         assert_eq!(cfg.last_backup_at, None);
 
-        set_backup_config(&conn, "https://github.com/AlexZander85/wikiagents-backup.git").unwrap();
+        set_backup_config(
+            &conn,
+            "https://github.com/AlexZander85/wikiagents-backup.git",
+        )
+        .unwrap();
         let cfg2 = get_backup_config(&conn).unwrap();
-        assert_eq!(cfg2.repo_url, "https://github.com/AlexZander85/wikiagents-backup.git");
+        assert_eq!(
+            cfg2.repo_url,
+            "https://github.com/AlexZander85/wikiagents-backup.git"
+        );
     }
 
     #[test]

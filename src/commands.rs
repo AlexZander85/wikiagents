@@ -282,15 +282,17 @@ pub fn remember(
     let effective_session = session.unwrap_or("global");
     let id = index::save_snippet(
         &conn,
-        effective_session,
-        0,
-        title,
-        Some("markdown"),
-        content,
-        tags,
-        Some("assistant"),
-        Some("assistant_memory"),
-        None,
+        &index::NewSnippet {
+            session_id: effective_session,
+            message_idx: 0,
+            title,
+            lang: Some("markdown"),
+            content,
+            tags,
+            role: Some("assistant_memory"),
+            tool: Some("assistant"),
+            message_ts: None,
+        },
     )?;
     if json {
         println!(
@@ -1922,8 +1924,16 @@ pub fn blame_runs(
                         tool: srow.tool,
                         title: srow.title,
                         project: srow.project,
-                        started: srow.started.as_deref().and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok()).map(|d| d.timestamp()),
-                        ended: srow.last_active.as_deref().and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok()).map(|d| d.timestamp()),
+                        started: srow
+                            .started
+                            .as_deref()
+                            .and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok())
+                            .map(|d| d.timestamp()),
+                        ended: srow
+                            .last_active
+                            .as_deref()
+                            .and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok())
+                            .map(|d| d.timestamp()),
                         archived: srow.archived,
                     };
                     return crate::blame::Attribution::Exact(sess);
@@ -2199,7 +2209,10 @@ pub fn vacuum() -> Result<()> {
             human_size(report.before - report.after),
         );
     } else if report.after == report.before {
-        println!("Database is already compact ({}).", human_size(report.after));
+        println!(
+            "Database is already compact ({}).",
+            human_size(report.after)
+        );
     } else {
         println!(
             "Vacuum complete: {} -> {} (grew by {})",
@@ -2227,12 +2240,22 @@ fn project_label(p: &str) -> String {
     }
 }
 
-pub fn backup_cmd(repo: Option<&str>, test: bool, status: bool, push: bool, restore: bool) -> Result<()> {
+pub fn backup_cmd(
+    repo: Option<&str>,
+    test: bool,
+    status: bool,
+    push: bool,
+    restore: bool,
+) -> Result<()> {
     let mut conn = index::open()?;
     if test {
         let repo_url = repo
             .map(String::from)
-            .or_else(|| crate::backup::get_backup_config(&conn).ok().map(|c| c.repo_url))
+            .or_else(|| {
+                crate::backup::get_backup_config(&conn)
+                    .ok()
+                    .map(|c| c.repo_url)
+            })
             .unwrap_or_default();
         let res = crate::backup::test_connection(&repo_url);
         println!("Git: {}", res.git_version);
@@ -2258,10 +2281,16 @@ pub fn backup_cmd(repo: Option<&str>, test: bool, status: bool, push: bool, rest
     if restore {
         let repo_url = repo
             .map(String::from)
-            .or_else(|| crate::backup::get_backup_config(&conn).ok().map(|c| c.repo_url))
+            .or_else(|| {
+                crate::backup::get_backup_config(&conn)
+                    .ok()
+                    .map(|c| c.repo_url)
+            })
             .unwrap_or_default();
         if repo_url.is_empty() {
-            anyhow::bail!("Repository URL not configured. Run: wikiagents backup --repo <url> --restore");
+            anyhow::bail!(
+                "Repository URL not configured. Run: wikiagents backup --repo <url> --restore"
+            );
         }
         println!("Starting database restore from {}...", repo_url);
         let count = crate::backup::run_restore(&mut conn, &repo_url)?;
@@ -2272,7 +2301,14 @@ pub fn backup_cmd(repo: Option<&str>, test: bool, status: bool, push: bool, rest
     if status || (!push && !restore && repo.is_none()) {
         let cfg = crate::backup::get_backup_config(&conn)?;
         println!("GitHub Backup Configuration:");
-        println!("  Repository: {}", if cfg.repo_url.is_empty() { "Not configured" } else { &cfg.repo_url });
+        println!(
+            "  Repository: {}",
+            if cfg.repo_url.is_empty() {
+                "Not configured"
+            } else {
+                &cfg.repo_url
+            }
+        );
         if let Some(ts) = cfg.last_backup_at {
             let dt = chrono::DateTime::from_timestamp(ts, 0)
                 .map(|d| d.format("%Y-%m-%d %H:%M:%S UTC").to_string())
@@ -2291,7 +2327,9 @@ pub fn backup_cmd(repo: Option<&str>, test: bool, status: bool, push: bool, rest
     if push {
         let cfg = crate::backup::get_backup_config(&conn)?;
         if cfg.repo_url.is_empty() {
-            anyhow::bail!("Repository URL not configured. Run: wikiagents backup --repo <url> --push");
+            anyhow::bail!(
+                "Repository URL not configured. Run: wikiagents backup --repo <url> --push"
+            );
         }
         println!("Starting backup to {}...", cfg.repo_url);
         let report = crate::backup::run_backup(&conn, &cfg.repo_url)?;
@@ -2315,9 +2353,9 @@ pub fn commit_cmd(sha: &str, json: bool, no_sync: bool) -> Result<()> {
     match row_opt {
         Some(row) => {
             let commits = index::get_session_commits(&conn, &row.session_id).unwrap_or_default();
-            let matched_commit = commits.iter().find(|(c, _, _)| {
-                c.starts_with(sha) || sha.starts_with(c)
-            });
+            let matched_commit = commits
+                .iter()
+                .find(|(c, _, _)| c.starts_with(sha) || sha.starts_with(c));
             if json {
                 let v = serde_json::json!({
                     "commit": sha,
@@ -2332,15 +2370,11 @@ pub fn commit_cmd(sha: &str, json: bool, no_sync: bool) -> Result<()> {
                 });
                 println!("{}", serde_json::to_string_pretty(&v)?);
             } else {
-                println!(
-                    "{} {}",
-                    green("✓ AI Session found for commit"),
-                    bold(sha)
-                );
+                println!("{} {}", green("✓ AI Session found for commit"), bold(sha));
                 println!("  {} {}", dim("Session ID:"), yellow(&row.session_id));
                 println!("  {} {}", dim("Tool:      "), cyan(&row.tool));
                 println!("  {} {}", dim("Title:     "), bold(&row.title));
-                println!("  {} {}", dim("Project:   "), &row.project);
+                println!("  {} {}", dim("Project:   "), row.project);
                 if let Some((_, Some(msg), _)) = matched_commit {
                     println!("  {} {}", dim("Message:   "), msg);
                 }
@@ -2363,13 +2397,12 @@ pub fn commit_cmd(sha: &str, json: bool, no_sync: bool) -> Result<()> {
         }
         None => {
             if json {
-                println!("{}", serde_json::json!({ "error": "not found", "commit": sha }));
-            } else {
-                eprintln!(
-                    "{} No AI session found for commit {}",
-                    yellow("Note:"),
-                    sha
+                println!(
+                    "{}",
+                    serde_json::json!({ "error": "not found", "commit": sha })
                 );
+            } else {
+                eprintln!("{} No AI session found for commit {}", yellow("Note:"), sha);
                 eprintln!(
                     "{}",
                     dim("This commit may have been created manually, or outside indexed AI sessions.")

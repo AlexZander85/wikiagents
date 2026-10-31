@@ -576,9 +576,7 @@ fn main() {
             json,
             no_sync,
         } => commands::blame(&file, range, json, no_sync),
-        Command::Commit { sha, json, no_sync } => {
-            commands::commit_cmd(&sha, json, no_sync)
-        }
+        Command::Commit { sha, json, no_sync } => commands::commit_cmd(&sha, json, no_sync),
         Command::Forget { id } => commands::forget(&id),
         Command::Sync { tool } => commands::sync_cmd(tool.as_deref()),
         Command::Digest {
@@ -599,9 +597,13 @@ fn main() {
             sessionwiki::hook::session_start();
             return;
         }
-        Command::Backup { repo, test, status, push, restore } => {
-            commands::backup_cmd(repo.as_deref(), test, status, push, restore)
-        }
+        Command::Backup {
+            repo,
+            test,
+            status,
+            push,
+            restore,
+        } => commands::backup_cmd(repo.as_deref(), test, status, push, restore),
         Command::Mcp => {
             sessionwiki::mcp::serve();
             return;

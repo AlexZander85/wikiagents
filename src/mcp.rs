@@ -1083,7 +1083,7 @@ fn tool_summary(conn: &mut Option<Connection>, args: &Value) -> Value {
         .map(|p| redact_home(&p))
         .collect();
 
-    let mut v = serde_json::to_value(&row).unwrap_or_else(|_| json!({}));
+    let mut v = serde_json::to_value(row).unwrap_or_else(|_| json!({}));
     neutralize_row(&mut v);
     if let Some(obj) = v.as_object_mut() {
         obj.insert("is_favorite".into(), json!(is_fav));
@@ -1158,7 +1158,8 @@ fn tool_snippets(conn: &mut Option<Connection>, args: &Value) -> Value {
         return text_result("[]".into(), false);
     };
 
-    let items = match crate::index::list_snippets(conn, query, lang, session_id, None, role, limit) {
+    let items = match crate::index::list_snippets(conn, query, lang, session_id, None, role, limit)
+    {
         Ok(items) => items,
         Err(e) => {
             return text_result(
@@ -1176,13 +1177,13 @@ fn tool_snippets(conn: &mut Option<Connection>, args: &Value) -> Value {
                 "session_id": s.session_id,
                 "message_idx": s.message_idx,
                 "title": crate::commands::neutralize_field(&s.title),
-                "lang": s.lang.as_deref().map(|l| crate::commands::neutralize_field(l)),
+                "lang": s.lang.as_deref().map(crate::commands::neutralize_field),
                 "content": safe_text(&s.content),
-                "tags": s.tags.as_deref().map(|t| crate::commands::neutralize_field(t)),
+                "tags": s.tags.as_deref().map(crate::commands::neutralize_field),
                 "created_at": s.created_at,
-                "tool": s.tool.as_deref().map(|t| crate::commands::neutralize_field(t)),
-                "role": s.role.as_deref().map(|r| crate::commands::neutralize_field(r)),
-                "message_ts": s.message_ts.as_deref().map(|m| crate::commands::neutralize_field(m)),
+                "tool": s.tool.as_deref().map(crate::commands::neutralize_field),
+                "role": s.role.as_deref().map(crate::commands::neutralize_field),
+                "message_ts": s.message_ts.as_deref().map(crate::commands::neutralize_field),
             })
         })
         .collect();
@@ -1190,17 +1191,28 @@ fn tool_snippets(conn: &mut Option<Connection>, args: &Value) -> Value {
     json_result(rows)
 }
 
-
 fn tool_remember(_conn: &mut Option<Connection>, args: &Value) -> Value {
-    let title = args.get("title").and_then(Value::as_str).unwrap_or("").trim();
+    let title = args
+        .get("title")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim();
     if title.is_empty() {
         return text_result("title is required".into(), true);
     }
-    let content = args.get("content").and_then(Value::as_str).unwrap_or("").trim();
+    let content = args
+        .get("content")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim();
     if content.is_empty() {
         return text_result("content is required".into(), true);
     }
-    let session_id = args.get("session_id").and_then(Value::as_str).unwrap_or("global").trim();
+    let session_id = args
+        .get("session_id")
+        .and_then(Value::as_str)
+        .unwrap_or("global")
+        .trim();
     let tags = args.get("tags").and_then(Value::as_str);
 
     let write_conn = match crate::index::open() {
@@ -1210,15 +1222,21 @@ fn tool_remember(_conn: &mut Option<Connection>, args: &Value) -> Value {
 
     match crate::index::save_snippet(
         &write_conn,
-        if session_id.is_empty() { "global" } else { session_id },
-        0,
-        title,
-        Some("markdown"),
-        content,
-        tags,
-        Some("assistant"),
-        Some("assistant_memory"),
-        None,
+        &crate::index::NewSnippet {
+            session_id: if session_id.is_empty() {
+                "global"
+            } else {
+                session_id
+            },
+            message_idx: 0,
+            title,
+            lang: Some("markdown"),
+            content,
+            tags,
+            tool: Some("assistant"),
+            role: Some("assistant_memory"),
+            message_ts: None,
+        },
     ) {
         Ok(id) => json_result(vec![json!({
             "ok": true,
@@ -1227,7 +1245,10 @@ fn tool_remember(_conn: &mut Option<Connection>, args: &Value) -> Value {
             "role": "assistant_memory",
             "message": format!("Successfully saved memory #{id} [{title}] to SessionWiki knowledge base.")
         })]),
-        Err(e) => text_result(format!("save memory failed: {}", safe_text(&e.to_string())), true),
+        Err(e) => text_result(
+            format!("save memory failed: {}", safe_text(&e.to_string())),
+            true,
+        ),
     }
 }
 /// The blocking stdio serve loop. Owns every byte written to stdout; EOF on
@@ -1949,15 +1970,17 @@ mod tests {
         let c = seed("sessionwiki-test-mcp-snippets");
         crate::index::save_snippet(
             &c,
-            "s1",
-            0,
-            "CORS fix snippet",
-            Some("typescript"),
-            "res.setHeader('Access-Control-Allow-Origin', '*');",
-            Some("cors,auth"),
-            Some("claude-code"),
-            Some("assistant"),
-            Some("2026-10-01T12:00:00Z"),
+            &crate::index::NewSnippet {
+                session_id: "s1",
+                message_idx: 0,
+                title: "CORS fix snippet",
+                lang: Some("typescript"),
+                content: "res.setHeader('Access-Control-Allow-Origin', '*');",
+                tags: Some("cors,auth"),
+                tool: Some("claude-code"),
+                role: Some("assistant"),
+                message_ts: Some("2026-10-01T12:00:00Z"),
+            },
         )
         .unwrap();
         drop(c);
@@ -1968,7 +1991,10 @@ mod tests {
         assert_eq!(arr.as_array().unwrap().len(), 1);
         assert_eq!(arr[0]["title"], "CORS fix snippet");
         assert_eq!(arr[0]["lang"], "typescript");
-        assert!(arr[0]["content"].as_str().unwrap().contains("Access-Control-Allow-Origin"));
+        assert!(arr[0]["content"]
+            .as_str()
+            .unwrap()
+            .contains("Access-Control-Allow-Origin"));
         assert_eq!(arr[0]["session_id"], "s1");
     }
 
@@ -1988,8 +2014,11 @@ mod tests {
         assert_eq!(sol["id"], "s1");
         assert_eq!(sol["is_favorite"], true);
         assert_eq!(sol["note"], "resolved 403 by configuring CORS header");
-        assert!(sol["files_touched"].as_array().unwrap().len() >= 1);
-        assert!(sol["markdown"].as_str().unwrap().contains("Untrusted session content"));
+        assert!(!sol["files_touched"].as_array().unwrap().is_empty());
+        assert!(sol["markdown"]
+            .as_str()
+            .unwrap()
+            .contains("Untrusted session content"));
         assert_eq!(obj["candidates"][0]["is_favorite"], true);
     }
 
@@ -2007,7 +2036,7 @@ mod tests {
         assert_eq!(obj["id"], "s1");
         assert_eq!(obj["is_favorite"], true);
         assert_eq!(obj["note"], "important note");
-        assert!(obj["files_touched"].as_array().unwrap().len() >= 1);
+        assert!(!obj["files_touched"].as_array().unwrap().is_empty());
     }
 
     #[test]

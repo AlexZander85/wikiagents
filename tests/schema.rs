@@ -25,7 +25,7 @@ fn durable_version(conn: &Connection) -> String {
 
 #[test]
 fn open_stamps_baseline_durable_version_and_is_idempotent() {
-    let _g = LOCK.lock().unwrap();
+    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     fresh_dir("sessionwiki-test-schema-baseline");
     let conn = index::open().unwrap();
     // A fresh DB is stamped at baseline (1), then the registered migrations
@@ -68,7 +68,7 @@ fn assert_durables_intact(conn: &Connection) {
 
 #[test]
 fn durables_survive_a_cache_schema_bump() {
-    let _g = LOCK.lock().unwrap();
+    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     fresh_dir("sessionwiki-test-schema-survive");
     let conn = index::open().unwrap();
     conn.execute_batch(
@@ -84,7 +84,7 @@ fn durables_survive_a_cache_schema_bump() {
 
 #[test]
 fn adopts_baseline_on_a_pre_feature_index() {
-    let _g = LOCK.lock().unwrap();
+    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     fresh_dir("sessionwiki-test-schema-adopt");
     let conn = index::open().unwrap();
     conn.execute_batch(
@@ -107,7 +107,7 @@ fn adopts_baseline_on_a_pre_feature_index() {
 
 #[test]
 fn migration_v2_heals_legacy_nfd_tags() {
-    let _g = LOCK.lock().unwrap();
+    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     fresh_dir("sessionwiki-test-schema-tagmig");
     let conn = index::open().unwrap(); // fresh DB is already at v2
     conn.execute_batch("DELETE FROM files; DELETE FROM tags;")

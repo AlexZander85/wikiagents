@@ -47,7 +47,7 @@ fn seed_role_message(conn: &Connection, id: &str, role: Role, text: &str) {
 
 #[test]
 fn role_filter_excludes_tool_only_matches_and_leaves_default_search_unchanged() {
-    let _guard = LOCK.lock().unwrap();
+    let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let (conn, _) = fresh_index();
     seed_role_message(
         &conn,
@@ -70,7 +70,7 @@ fn role_filter_excludes_tool_only_matches_and_leaves_default_search_unchanged() 
 
 #[test]
 fn role_filter_returns_the_best_allowed_message_for_each_session() {
-    let _guard = LOCK.lock().unwrap();
+    let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let (conn, _) = fresh_index();
     seed_role_message(&conn, "mixed-roles", Role::Tool, "beacon");
     seed_role_message(&conn, "mixed-roles", Role::Assistant, "assistant beacon");
@@ -93,7 +93,7 @@ fn role_filter_returns_the_best_allowed_message_for_each_session() {
 
 #[test]
 fn role_filter_runs_before_the_fts_candidate_cap() {
-    let _guard = LOCK.lock().unwrap();
+    let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let (mut conn, _) = fresh_index();
     let tx = conn.transaction().unwrap();
     let mut insert_file = tx
@@ -142,7 +142,7 @@ fn role_filter_runs_before_the_fts_candidate_cap() {
 
 #[test]
 fn role_filter_applies_to_the_short_term_like_path() {
-    let _guard = LOCK.lock().unwrap();
+    let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let (conn, _) = fresh_index();
     seed_role_message(
         &conn,
@@ -192,7 +192,7 @@ fn cli_accepts_comma_separated_search_roles() {
 
 #[test]
 fn new_index_defaults_to_trigram_and_creates_external_content_fts() {
-    let _guard = LOCK.lock().unwrap();
+    let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let (conn, _) = fresh_index();
 
     assert_eq!(index::tokenizer_spec(&conn).unwrap(), "trigram");
@@ -214,7 +214,7 @@ fn new_index_defaults_to_trigram_and_creates_external_content_fts() {
 
 #[test]
 fn opening_current_index_succeeds_while_another_connection_holds_write_lock() {
-    let _guard = LOCK.lock().unwrap();
+    let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let (conn, _) = fresh_index();
     seed_message(&conn, "writer-lock", "searchable result");
 
@@ -236,7 +236,7 @@ fn opening_current_index_succeeds_while_another_connection_holds_write_lock() {
 
 #[test]
 fn unquoted_terms_match_when_separated_in_one_message() {
-    let _guard = LOCK.lock().unwrap();
+    let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let (conn, _) = fresh_index();
     seed_message(
         &conn,
@@ -251,7 +251,7 @@ fn unquoted_terms_match_when_separated_in_one_message() {
 
 #[test]
 fn trigram_phrases_preserve_whitespace_and_require_adjacency() {
-    let _guard = LOCK.lock().unwrap();
+    let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let (conn, _) = fresh_index();
     seed_message(&conn, "wrapped", "before alpha\n  beta after");
     seed_message(&conn, "adjacent", "before alpha beta after");
@@ -276,7 +276,7 @@ fn trigram_phrases_preserve_whitespace_and_require_adjacency() {
 
 #[test]
 fn terms_in_different_messages_of_one_session_do_not_match() {
-    let _guard = LOCK.lock().unwrap();
+    let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let (conn, _) = fresh_index();
     seed_message(&conn, "split", "alpha is in this message");
     seed_message(&conn, "split", "beta is in another message");
@@ -288,7 +288,7 @@ fn terms_in_different_messages_of_one_session_do_not_match() {
 
 #[test]
 fn mixed_short_long_and_all_short_terms_are_anded() {
-    let _guard = LOCK.lock().unwrap();
+    let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let (conn, _) = fresh_index();
     seed_message(&conn, "mixed", "the DB reconnect can retry");
     let hits = index::search(&conn, "DB retry", 10, None, None).unwrap();
@@ -305,7 +305,7 @@ fn mixed_short_long_and_all_short_terms_are_anded() {
 
 #[test]
 fn quotes_and_fts_operator_words_are_searched_as_text() {
-    let _guard = LOCK.lock().unwrap();
+    let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let (conn, _) = fresh_index();
     seed_message(
         &conn,
@@ -324,7 +324,7 @@ fn quotes_and_fts_operator_words_are_searched_as_text() {
 
 #[test]
 fn snippets_highlight_all_short_terms_on_the_like_path() {
-    let _guard = LOCK.lock().unwrap();
+    let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let (conn, _) = fresh_index();
     seed_message(
         &conn,
@@ -340,7 +340,7 @@ fn snippets_highlight_all_short_terms_on_the_like_path() {
 
 #[test]
 fn fts_snippets_highlight_terms_and_exact_phrase_whitespace() {
-    let _guard = LOCK.lock().unwrap();
+    let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let (conn, _) = fresh_index();
     seed_message(&conn, "snippet-fts", "first alpha\n  beta");
 
@@ -399,7 +399,7 @@ fn adapter(source: PathBuf, parses: Arc<AtomicUsize>) -> Vec<Box<dyn Adapter>> {
 
 #[test]
 fn unicode61_persists_rebuilds_fts_without_parsing_and_matches_wrapped_phrase() {
-    let _guard = LOCK.lock().unwrap();
+    let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let (mut conn, dir) = fresh_index();
     let source = dir.join("session.txt");
     std::fs::write(&source, "before alpha\n  beta after").unwrap();
@@ -432,7 +432,7 @@ fn unicode61_persists_rebuilds_fts_without_parsing_and_matches_wrapped_phrase() 
 
 #[test]
 fn unicode61_finds_short_words_through_fts_not_substring_like() {
-    let _guard = LOCK.lock().unwrap();
+    let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let (conn, _) = fresh_index();
     seed_message(&conn, "word", "the id is here");
     seed_message(&conn, "substring", "identity is here");
@@ -445,7 +445,7 @@ fn unicode61_finds_short_words_through_fts_not_substring_like() {
 
 #[test]
 fn unicode61_tokenless_punctuation_term_returns_no_hits_without_sql_error() {
-    let _guard = LOCK.lock().unwrap();
+    let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let (conn, _) = fresh_index();
     seed_message(&conn, "punctuation", "ordinary searchable words");
     index::set_tokenizer_spec(&conn, "unicode61").unwrap();
@@ -457,7 +457,7 @@ fn unicode61_tokenless_punctuation_term_returns_no_hits_without_sql_error() {
 
 #[test]
 fn invalid_tokenizer_leaves_existing_index_and_setting_unchanged() {
-    let _guard = LOCK.lock().unwrap();
+    let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let (conn, _) = fresh_index();
     seed_message(&conn, "preserved", "searchable words remain");
     let ddl: String = conn
@@ -488,7 +488,7 @@ fn invalid_tokenizer_leaves_existing_index_and_setting_unchanged() {
 
 #[test]
 fn tokenizer_spec_with_quotes_cannot_inject_sql() {
-    let _guard = LOCK.lock().unwrap();
+    let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let (conn, _) = fresh_index();
     seed_message(&conn, "preserved", "searchable words remain");
 
@@ -511,7 +511,7 @@ fn tokenizer_spec_with_quotes_cannot_inject_sql() {
 
 #[test]
 fn cache_rebuild_uses_the_stored_tokenizer() {
-    let _guard = LOCK.lock().unwrap();
+    let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let (conn, _) = fresh_index();
     index::set_tokenizer_spec(&conn, "unicode61").unwrap();
     conn.pragma_update(None, "user_version", 0i64).unwrap();
@@ -531,7 +531,7 @@ fn cache_rebuild_uses_the_stored_tokenizer() {
 
 #[test]
 fn mcp_short_query_guard_depends_on_tokenizer() {
-    let _guard = LOCK.lock().unwrap();
+    let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let (conn, _) = fresh_index();
     assert!(index::mcp_search_guard(&conn, "xy").unwrap().is_some());
     assert!(index::mcp_search_guard(&conn, "xyz").unwrap().is_none());
@@ -544,7 +544,7 @@ fn mcp_short_query_guard_depends_on_tokenizer() {
 
 #[test]
 fn reindexing_a_session_removes_its_old_external_content_rows() {
-    let _guard = LOCK.lock().unwrap();
+    let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let (mut conn, dir) = fresh_index();
     let source = dir.join("session.txt");
     std::fs::write(&source, "old material phrase").unwrap();
@@ -571,13 +571,12 @@ fn reindexing_a_session_removes_its_old_external_content_rows() {
     );
 }
 
-
 /// `--project` is a substring of the folder, taken literally: `_` in a name
 /// such as `my_app` is an underscore, not any character, and `%` is a percent
 /// sign rather than "every project".
 #[test]
 fn the_project_filter_matches_its_text_literally() {
-    let _g = LOCK.lock().unwrap();
+    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let (conn, _dir) = fresh_index();
     for (id, project) in [("under", "/w/my_app"), ("dash", "/w/my-app")] {
         conn.execute(

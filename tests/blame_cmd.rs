@@ -38,7 +38,7 @@ fn git(dir: &Path, args: &[&str], date: Option<&str>) {
 
 #[test]
 fn blame_runs_attributes_a_committed_line_to_the_touching_session() {
-    let _g = LOCK.lock().unwrap();
+    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let conn = fresh();
 
     let dir = tempfile::tempdir().unwrap();

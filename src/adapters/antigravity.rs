@@ -41,7 +41,12 @@ impl Antigravity {
     /// An adapter for Antigravity IDE transcripts under `home/.gemini/antigravity/brain`.
     pub fn in_home(home: impl Into<PathBuf>) -> Self {
         Antigravity {
-            root: Some(home.into().join(".gemini").join("antigravity").join("brain")),
+            root: Some(
+                home.into()
+                    .join(".gemini")
+                    .join("antigravity")
+                    .join("brain"),
+            ),
             dir: "antigravity",
         }
     }
@@ -49,7 +54,12 @@ impl Antigravity {
     /// An adapter for Antigravity CLI (`agy`) transcripts under `home/.gemini/antigravity-cli/brain`.
     pub fn cli_in_home(home: impl Into<PathBuf>) -> Self {
         Antigravity {
-            root: Some(home.into().join(".gemini").join("antigravity-cli").join("brain")),
+            root: Some(
+                home.into()
+                    .join(".gemini")
+                    .join("antigravity-cli")
+                    .join("brain"),
+            ),
             dir: "antigravity-cli",
         }
     }
@@ -415,14 +425,19 @@ mod tests {
 
         let cli_adapter = Antigravity::cli_in_home(temp.path());
         assert_eq!(cli_adapter.name(), "antigravity");
-        assert!(cli_adapter.root().unwrap().ends_with(Path::new(".gemini").join("antigravity-cli").join("brain")));
+        assert!(cli_adapter
+            .root()
+            .unwrap()
+            .ends_with(Path::new(".gemini").join("antigravity-cli").join("brain")));
 
         let discovered = cli_adapter.discover();
         assert!(!discovered.had_error);
         assert_eq!(discovered.files.len(), 1);
         assert_eq!(discovered.files[0], transcript_path);
 
-        let session = cli_adapter.parse(&transcript_path).expect("parse should succeed");
+        let session = cli_adapter
+            .parse(&transcript_path)
+            .expect("parse should succeed");
         assert_eq!(session.tool, "antigravity");
         assert_eq!(session.id, "cli_session_jwt_test");
         assert_eq!(session.title, "Refactor auth module with JWT support");
@@ -437,5 +452,4 @@ mod tests {
         let ide_discovered = ide_adapter.discover();
         assert_eq!(ide_discovered.files.len(), 0);
     }
-
 }

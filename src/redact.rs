@@ -200,7 +200,10 @@ mod tests {
             // split so GitHub secret-scanning doesn't flag these fake test tokens
             (concat!("s", "k-abcdef012345678901234567890123"), "openai"),
             ("AKIAIOSFODNN7EXAMPLE", "aws"),
-            (concat!("gh", "p_016C7f9aBcDeFgHiJkLmNoPqRsTuVwXyZ012"), "github"),
+            (
+                concat!("gh", "p_016C7f9aBcDeFgHiJkLmNoPqRsTuVwXyZ012"),
+                "github",
+            ),
             (concat!("xox", "b-1234567890-abcdefghijklmnop"), "slack"),
         ] {
             let s = format!("key={raw} rest");
@@ -244,7 +247,10 @@ mod tests {
             // split so GitHub secret-scanning doesn't flag these fake test tokens
             concat!("AIza", "SyA1234567890abcdefghijklmnopqrstuvw"),
             concat!("sk_live", "_0123456789abcdefghijklmnop"),
-            concat!("github_pat", "_11ABCDE0000abcdefghij_0123456789abcdefghijklmnopqrstuvwxyzABCD"),
+            concat!(
+                "github_pat",
+                "_11ABCDE0000abcdefghij_0123456789abcdefghijklmnopqrstuvwxyzABCD"
+            ),
         ] {
             let s = format!("k={raw} z");
             let out = redact(&s);

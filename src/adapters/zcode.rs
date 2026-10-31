@@ -15,6 +15,17 @@ pub struct ZCode;
 const KEY_SEP: char = '\u{1f}';
 const SNIPPET_CAP: usize = 200;
 
+/// The session header row: cwd, title, created and updated stamps, parent id,
+/// task type (absent in schemas that predate `task_type`).
+type SessionMeta = (
+    Option<String>,
+    Option<String>,
+    Option<i64>,
+    Option<i64>,
+    Option<String>,
+    Option<String>,
+);
+
 fn db_path() -> Option<PathBuf> {
     if let Some(p) = std::env::var_os("ZCODE_DB").map(PathBuf::from) {
         if p.is_file() {
@@ -165,28 +176,31 @@ impl Adapter for ZCode {
             .prepare("SELECT task_type FROM session LIMIT 0")
             .is_ok();
 
-        let (directory, title, created_ms, updated_ms, parent_id, task_type): (
-            Option<String>,
-            Option<String>,
-            Option<i64>,
-            Option<i64>,
-            Option<String>,
-            Option<String>,
-        ) = if has_task_type {
-            conn.query_row(
-                "SELECT directory, title, time_created, time_updated, parent_id, task_type
+        let (directory, title, created_ms, updated_ms, parent_id, task_type): SessionMeta =
+            if has_task_type {
+                conn.query_row(
+                    "SELECT directory, title, time_created, time_updated, parent_id, task_type
                  FROM session WHERE id = ?1",
-                params![sid],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
-            )?
-        } else {
-            conn.query_row(
-                "SELECT directory, title, time_created, time_updated, parent_id
+                    params![sid],
+                    |r| {
+                        Ok((
+                            r.get(0)?,
+                            r.get(1)?,
+                            r.get(2)?,
+                            r.get(3)?,
+                            r.get(4)?,
+                            r.get(5)?,
+                        ))
+                    },
+                )?
+            } else {
+                conn.query_row(
+                    "SELECT directory, title, time_created, time_updated, parent_id
                  FROM session WHERE id = ?1",
-                params![sid],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, None)),
-            )?
-        };
+                    params![sid],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, None)),
+                )?
+            };
 
         let started = created_ms.and_then(ms_to_datetime);
         let ended = updated_ms.and_then(ms_to_datetime).or(started);
@@ -502,7 +516,8 @@ mod tests {
                         },
                         "output": "Edit successful"
                     }
-                }).to_string(),
+                })
+                .to_string(),
                 1,
             ],
         )
@@ -549,7 +564,13 @@ mod tests {
                     let sess = zcode.parse_key(key).expect("parse real zcode session");
                     assert_eq!(sess.tool, "zcode");
                     assert!(!sess.id.is_empty());
-                    println!("Parsed real zcode session: id={}, title={}, msgs={}, touched={:?}", sess.id, sess.title, sess.messages.len(), sess.touched);
+                    println!(
+                        "Parsed real zcode session: id={}, title={}, msgs={}, touched={:?}",
+                        sess.id,
+                        sess.title,
+                        sess.messages.len(),
+                        sess.touched
+                    );
                 }
             }
         }

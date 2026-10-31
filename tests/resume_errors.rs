@@ -32,7 +32,7 @@ fn seed(conn: &Connection, id: &str, tool: &str, path: &str) {
 
 #[test]
 fn unsupported_tool_reports_headless_not_deleted_file() {
-    let _g = LOCK.lock().unwrap();
+    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let conn = fresh();
     // An aider row's stored path is "<file>\u{1f}<run>" - a key, not a file, so
     // exists() is false. The error must say "no headless resume", not lie that
@@ -56,7 +56,7 @@ fn unsupported_tool_reports_headless_not_deleted_file() {
 
 #[test]
 fn deleted_file_for_resumable_tool_still_reports_file_gone() {
-    let _g = LOCK.lock().unwrap();
+    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let conn = fresh();
     seed(
         &conn,

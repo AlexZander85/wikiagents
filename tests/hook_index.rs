@@ -29,7 +29,7 @@ fn seed(conn: &Connection, id: &str, project: &str, started: &str) {
 
 #[test]
 fn project_brief_is_exact_match_newest_first() {
-    let _g = LOCK.lock().unwrap();
+    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let conn = fresh();
     seed(&conn, "old", "/home/me/app", "2026-06-08T10:00:00+00:00");
     seed(&conn, "new", "/home/me/app", "2026-06-10T10:00:00+00:00");

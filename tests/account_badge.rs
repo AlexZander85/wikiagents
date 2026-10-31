@@ -23,18 +23,22 @@ fn fresh(tag: &str) -> Connection {
 }
 
 fn seed(conn: &Connection, id: &str, tool: &str, started: &str) {
+    seed_project(conn, id, tool, started, "/proj/api");
+}
+
+fn seed_project(conn: &Connection, id: &str, tool: &str, started: &str, project: &str) {
     conn.execute(
         "INSERT OR REPLACE INTO files
          (path, mtime, size, session_id, tool, project, title, started, ended, msg_count, kind)
-         VALUES (?1,0,0,?2,?3,'/proj/api','fix auth bug',?4,?4,2,'main')",
-        params![format!("/abs/{id}.jsonl"), id, tool, started],
+         VALUES (?1,0,0,?2,?3,?5,'fix auth bug',?4,?4,2,'main')",
+        params![format!("/abs/{id}.jsonl"), id, tool, started, project],
     )
     .unwrap();
 }
 
 #[test]
 fn rows_carry_the_active_account_from_the_swapdex_timeline() {
-    let _g = LOCK.lock().unwrap();
+    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let conn = fresh("attr");
     // Switch to 'work' at t=1000, to 'personal' at t=2000 (codex only).
     let tl = std::env::temp_dir().join("sessionwiki-test-acct-attr-timeline.jsonl");
@@ -89,7 +93,7 @@ fn rows_carry_the_active_account_from_the_swapdex_timeline() {
 
 #[test]
 fn serve_off_boundary_clears_badges_until_later_restore() {
-    let _g = LOCK.lock().unwrap();
+    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let conn = fresh("serve-off");
     let t = tempfile::tempdir().unwrap();
     let timeline = t.path().join("timeline.jsonl");
@@ -134,7 +138,7 @@ fn serve_off_boundary_clears_badges_until_later_restore() {
 
 #[test]
 fn no_timeline_means_null_accounts() {
-    let _g = LOCK.lock().unwrap();
+    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     std::env::set_var(
         "SESSIONWIKI_SWAPDEX_TIMELINE",
         std::env::temp_dir().join("sessionwiki-test-acct-none.jsonl"), // absent
@@ -151,7 +155,7 @@ fn no_timeline_means_null_accounts() {
 
 #[test]
 fn trace_and_related_rows_carry_accounts_too() {
-    let _g = LOCK.lock().unwrap();
+    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let conn = fresh("trace");
     let tl = std::env::temp_dir().join("sessionwiki-test-acct-trace-tl.jsonl");
     std::fs::write(
@@ -184,12 +188,14 @@ fn trace_and_related_rows_carry_accounts_too() {
 // repo-relative (prodex bundles relative paths; editors show absolute ones).
 #[test]
 fn trace_matches_absolute_query_against_relative_stored_path() {
-    let _g = LOCK.lock().unwrap();
+    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let conn = fresh("abs");
     let t = chrono::DateTime::from_timestamp(1500, 0)
         .unwrap()
         .to_rfc3339();
-    seed(&conn, "s-abs", "prodex", &t);
+    // An absolute query must be rooted in the session's project: the project is
+    // what tells two same-named checkouts apart, so it is part of the match.
+    seed_project(&conn, "s-abs", "prodex", &t, "/home/dev/api");
     conn.execute(
         "INSERT INTO touched(session_id, path) VALUES ('s-abs','src/db-pool.ts')",
         [],
@@ -199,18 +205,17 @@ fn trace_matches_absolute_query_against_relative_stored_path() {
     assert_eq!(hit.len(), 1, "absolute query reaches the relative path");
     // Boundary is honored: a different file with the same suffix chars only.
     let miss = index::sessions_for_file(&conn, "/home/dev/api/srcx/db-pool.ts", 10).unwrap();
-    assert!(miss.len() <= 1, "no metachar explosion");
+    assert!(miss.is_empty(), "sibling directory must not match");
     let none = index::sessions_for_file(&conn, "/home/dev/b-pool.ts", 10).unwrap();
     assert!(none.is_empty(), "substring-without-boundary must not match");
 }
-
 
 // On a case-insensitive filesystem (WSL's /mnt/<drive>, macOS by default) a
 // tool records a path in whatever case it was typed, and the editor shows the
 // on-disk case. A full path traces the same way a relative one already does.
 #[test]
 fn a_full_path_traces_a_path_recorded_in_another_case() {
-    let _g = LOCK.lock().unwrap();
+    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let conn = fresh("case");
     let t = chrono::DateTime::from_timestamp(1500, 0)
         .unwrap()

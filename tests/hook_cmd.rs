@@ -32,7 +32,6 @@ fn hook_exits_0_and_empty_on_broken_index() {
     assert!(out.stdout.is_empty(), "broken index -> empty brief");
 }
 
-
 /// Claude Code hands the hook its folder as it records it (`C:\...` on
 /// Windows), and the brief lists that project's past sessions with each file
 /// relative to it; a file outside the project shows only its name.

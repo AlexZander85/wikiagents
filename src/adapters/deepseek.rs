@@ -1,4 +1,6 @@
-use crate::adapters::{clean_path, dedup_paths, ok_or_flag, title_from_messages, Adapter, Discovered};
+use crate::adapters::{
+    clean_path, dedup_paths, ok_or_flag, title_from_messages, Adapter, Discovered,
+};
 use crate::model::{EditEvent, EditKind, Message, Role, Session, ToolCall, ToolResult};
 use crate::util::short_id;
 use anyhow::{Context, Result};
@@ -73,29 +75,48 @@ impl Adapter for DeepSeek {
             let entry_type = v.get("type").and_then(Value::as_str).unwrap_or("");
 
             // 1. Header line
-            if entry_type == "header" || entry_type == "session_header" || (session_id.is_none() && v.get("id").is_some() && v.get("cwd").is_some()) {
+            if entry_type == "header"
+                || entry_type == "session_header"
+                || (session_id.is_none() && v.get("id").is_some() && v.get("cwd").is_some())
+            {
                 if let Some(id_val) = v.get("id").and_then(Value::as_str) {
                     session_id = Some(id_val.to_string());
                 }
                 if let Some(cwd_val) = v.get("cwd").and_then(Value::as_str) {
                     project = Some(cwd_val.to_string());
                 }
-                if let Some(created_val) = v.get("createdAt").or_else(|| v.get("created_at")).or_else(|| v.get("time")) {
+                if let Some(created_val) = v
+                    .get("createdAt")
+                    .or_else(|| v.get("created_at"))
+                    .or_else(|| v.get("time"))
+                {
                     started = parse_datetime(created_val);
                 }
-                if let Some(parent_val) = v.get("parentSession").or_else(|| v.get("parent_id")).or_else(|| v.get("parentSessionId")).and_then(Value::as_str) {
+                if let Some(parent_val) = v
+                    .get("parentSession")
+                    .or_else(|| v.get("parent_id"))
+                    .or_else(|| v.get("parentSessionId"))
+                    .and_then(Value::as_str)
+                {
                     if !parent_val.is_empty() {
                         parent_id = Some(parent_val.to_string());
                         subagent = true;
                     }
                 }
-                if v.get("delegationDepth").and_then(Value::as_i64).unwrap_or(0) > 0 {
+                if v.get("delegationDepth")
+                    .and_then(Value::as_i64)
+                    .unwrap_or(0)
+                    > 0
+                {
                     subagent = true;
                 }
                 continue;
             }
 
-            let time = v.get("time").or_else(|| v.get("timestamp")).and_then(parse_datetime);
+            let time = v
+                .get("time")
+                .or_else(|| v.get("timestamp"))
+                .and_then(parse_datetime);
             if time.is_some() {
                 ended = time;
                 if started.is_none() {
@@ -107,7 +128,11 @@ impl Adapter for DeepSeek {
 
             match entry_type {
                 "user/message" | "user_message" => {
-                    let text = data.get("content").or_else(|| data.get("text")).and_then(extract_text).unwrap_or_default();
+                    let text = data
+                        .get("content")
+                        .or_else(|| data.get("text"))
+                        .and_then(extract_text)
+                        .unwrap_or_default();
                     if !text.is_empty() {
                         messages.push(Message {
                             role: Role::User,
@@ -119,7 +144,11 @@ impl Adapter for DeepSeek {
                     }
                 }
                 "assistant/message" | "assistant_message" => {
-                    let text = data.get("content").or_else(|| data.get("text")).and_then(extract_text).unwrap_or_default();
+                    let text = data
+                        .get("content")
+                        .or_else(|| data.get("text"))
+                        .and_then(extract_text)
+                        .unwrap_or_default();
                     if !text.is_empty() {
                         messages.push(Message {
                             role: Role::Assistant,
@@ -131,9 +160,22 @@ impl Adapter for DeepSeek {
                     }
                 }
                 "tool/call" | "tool_call" => {
-                    let name = data.get("name").or_else(|| data.get("tool")).and_then(Value::as_str).unwrap_or("unknown");
-                    let call_id = data.get("call_id").or_else(|| data.get("id")).and_then(Value::as_str).map(String::from);
-                    let args = data.get("input").or_else(|| data.get("arguments")).or_else(|| data.get("args")).cloned().unwrap_or(Value::Null);
+                    let name = data
+                        .get("name")
+                        .or_else(|| data.get("tool"))
+                        .and_then(Value::as_str)
+                        .unwrap_or("unknown");
+                    let call_id = data
+                        .get("call_id")
+                        .or_else(|| data.get("id"))
+                        .and_then(Value::as_str)
+                        .map(String::from);
+                    let args = data
+                        .get("input")
+                        .or_else(|| data.get("arguments"))
+                        .or_else(|| data.get("args"))
+                        .cloned()
+                        .unwrap_or(Value::Null);
 
                     extract_edits_from_tool(name, &args, time, &mut touched, &mut edits);
 
@@ -147,9 +189,21 @@ impl Adapter for DeepSeek {
                     ));
                 }
                 "tool/result" | "tool_result" => {
-                    let call_id = data.get("call_id").or_else(|| data.get("id")).and_then(Value::as_str).map(String::from);
-                    let text = data.get("output").or_else(|| data.get("content")).and_then(extract_text).unwrap_or_default();
-                    let is_error = data.get("is_error").or_else(|| data.get("isError")).and_then(Value::as_bool).unwrap_or(false);
+                    let call_id = data
+                        .get("call_id")
+                        .or_else(|| data.get("id"))
+                        .and_then(Value::as_str)
+                        .map(String::from);
+                    let text = data
+                        .get("output")
+                        .or_else(|| data.get("content"))
+                        .and_then(extract_text)
+                        .unwrap_or_default();
+                    let is_error = data
+                        .get("is_error")
+                        .or_else(|| data.get("isError"))
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false);
 
                     messages.push(Message::tool_result(
                         time,
@@ -167,20 +221,38 @@ impl Adapter for DeepSeek {
                         match role_str {
                             "user" => {
                                 if !text.is_empty() {
-                                    messages.push(Message { role: Role::User, text, ts: time, tool: None, is_rewound: false });
+                                    messages.push(Message {
+                                        role: Role::User,
+                                        text,
+                                        ts: time,
+                                        tool: None,
+                                        is_rewound: false,
+                                    });
                                 }
                             }
                             "assistant" => {
                                 if !text.is_empty() {
-                                    messages.push(Message { role: Role::Assistant, text, ts: time, tool: None, is_rewound: false });
+                                    messages.push(Message {
+                                        role: Role::Assistant,
+                                        text,
+                                        ts: time,
+                                        tool: None,
+                                        is_rewound: false,
+                                    });
                                 }
                             }
                             "tool" => {
-                                messages.push(Message::tool_result(time, ToolResult {
-                                    call_id: v.get("tool_call_id").and_then(Value::as_str).map(String::from),
-                                    text,
-                                    is_error: false,
-                                }));
+                                messages.push(Message::tool_result(
+                                    time,
+                                    ToolResult {
+                                        call_id: v
+                                            .get("tool_call_id")
+                                            .and_then(Value::as_str)
+                                            .map(String::from),
+                                        text,
+                                        is_error: false,
+                                    },
+                                ));
                             }
                             _ => {}
                         }
@@ -210,7 +282,10 @@ impl Adapter for DeepSeek {
 }
 
 fn is_dsh_session_file(name: &str) -> bool {
-    let clean = name.strip_suffix(".zst").or_else(|| name.strip_suffix(".zstd")).unwrap_or(name);
+    let clean = name
+        .strip_suffix(".zst")
+        .or_else(|| name.strip_suffix(".zstd"))
+        .unwrap_or(name);
     clean == "session.jsonl"
         || (clean.starts_with("session.v") && clean.ends_with(".jsonl"))
         || clean.ends_with(".jsonl")
@@ -224,7 +299,9 @@ fn parse_datetime(v: &Value) -> Option<DateTime<Utc>> {
             DateTime::from_timestamp(ts_num, 0)
         }
     } else if let Some(s) = v.as_str() {
-        DateTime::parse_from_rfc3339(s).ok().map(|t| t.with_timezone(&Utc))
+        DateTime::parse_from_rfc3339(s)
+            .ok()
+            .map(|t| t.with_timezone(&Utc))
     } else {
         None
     }
@@ -235,15 +312,18 @@ fn extract_text(v: &Value) -> Option<String> {
         return Some(s.to_string());
     }
     if let Some(arr) = v.as_array() {
-        let parts: Vec<String> = arr.iter().filter_map(|p| {
-            if let Some(s) = p.as_str() {
-                Some(s.to_string())
-            } else if let Some(text) = p.get("text").and_then(Value::as_str) {
-                Some(text.to_string())
-            } else {
-                None
-            }
-        }).collect();
+        let parts: Vec<String> = arr
+            .iter()
+            .filter_map(|p| {
+                if let Some(s) = p.as_str() {
+                    Some(s.to_string())
+                } else {
+                    p.get("text")
+                        .and_then(Value::as_str)
+                        .map(|text| text.to_string())
+                }
+            })
+            .collect();
         if !parts.is_empty() {
             return Some(parts.join("\n"));
         }
@@ -258,18 +338,22 @@ fn extract_edits_from_tool(
     touched: &mut Vec<String>,
     edits: &mut Vec<EditEvent>,
 ) {
-    let path_val = args.get("file_path")
+    let path_val = args
+        .get("file_path")
         .or_else(|| args.get("path"))
         .or_else(|| args.get("target_file"))
         .and_then(Value::as_str);
 
     let Some(raw_path) = path_val else { return };
-    let Some(cleaned) = clean_path(raw_path) else { return };
+    let Some(cleaned) = clean_path(raw_path) else {
+        return;
+    };
     touched.push(cleaned.clone());
 
     let (kind, snippet) = match name {
         "edit_file" | "Edit" | "str_replace_editor" => {
-            let snip = args.get("new_str")
+            let snip = args
+                .get("new_str")
                 .or_else(|| args.get("new_string"))
                 .or_else(|| args.get("replacement"))
                 .and_then(Value::as_str)
@@ -277,7 +361,8 @@ fn extract_edits_from_tool(
             (EditKind::Edit, snip.to_string())
         }
         "write_file" | "Write" => {
-            let snip = args.get("content")
+            let snip = args
+                .get("content")
                 .or_else(|| args.get("contents"))
                 .and_then(Value::as_str)
                 .unwrap_or("");

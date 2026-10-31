@@ -157,53 +157,59 @@ fn handle_request(
         let _ = request.respond(Response::from_string("forbidden").with_status_code(403));
         return;
     }
-    LAST_REQUEST.store(chrono::Utc::now().timestamp(), std::sync::atomic::Ordering::Relaxed);
+    LAST_REQUEST.store(
+        chrono::Utc::now().timestamp(),
+        std::sync::atomic::Ordering::Relaxed,
+    );
     let gzip = request.headers().iter().any(|h| {
         h.field.equiv("Accept-Encoding")
-            && h.value.as_str().split(',').any(|e| e.trim().starts_with("gzip"))
+            && h.value
+                .as_str()
+                .split(',')
+                .any(|e| e.trim().starts_with("gzip"))
     });
     ACCEPT_GZIP.with(|g| g.set(gzip));
     let url = request.url().to_string();
     let (path, query) = url.split_once('?').unwrap_or((url.as_str(), ""));
     let result = match path {
         "/" => html(INDEX_HTML),
-        "/api/stats" => api_stats(&conn),
-        "/api/sessions" => api_sessions(&conn, query),
-        "/api/search" => api_search(&conn, query),
-        "/api/trace" => api_trace(&conn, query),
-        "/api/file" => api_file(&conn, query),
-        "/api/projects" => api_projects(&conn),
-        "/api/tag" => api_tag(&conn, query),
+        "/api/stats" => api_stats(conn),
+        "/api/sessions" => api_sessions(conn, query),
+        "/api/search" => api_search(conn, query),
+        "/api/trace" => api_trace(conn, query),
+        "/api/file" => api_file(conn, query),
+        "/api/projects" => api_projects(conn),
+        "/api/tag" => api_tag(conn, query),
         "/api/sync" => api_sync(conn, sync_lock),
-        "/api/favorites" => api_favorites(&conn),
-        "/api/favorite" => api_favorite(&conn, query),
+        "/api/favorites" => api_favorites(conn),
+        "/api/favorite" => api_favorite(conn, query),
         "/api/forget" => api_forget(conn, query),
-        "/api/brief" => api_brief(&conn, query),
-        "/api/snippets" => api_snippets(&conn, query),
-        "/api/snippet/save" => api_snippet_save(&conn, &mut request, query),
-        "/api/snippet/delete" => api_snippet_delete(&conn, query),
-        "/api/snippet/rename" => api_snippet_rename(&conn, &mut request, query),
-        "/api/subagents" => api_subagents(&conn, query),
-        "/api/analytics" => api_analytics(&conn),
-        "/api/analytics/files" => api_analytics_files(&conn, query),
-        "/api/analytics/langs" => api_analytics_langs(&conn, query),
-        "/api/backup/status" => api_backup_status(&conn),
-        "/api/backup/config" => api_backup_config(&conn, &mut request, query),
+        "/api/brief" => api_brief(conn, query),
+        "/api/snippets" => api_snippets(conn, query),
+        "/api/snippet/save" => api_snippet_save(conn, &mut request, query),
+        "/api/snippet/delete" => api_snippet_delete(conn, query),
+        "/api/snippet/rename" => api_snippet_rename(conn, &mut request, query),
+        "/api/subagents" => api_subagents(conn, query),
+        "/api/analytics" => api_analytics(conn),
+        "/api/analytics/files" => api_analytics_files(conn, query),
+        "/api/analytics/langs" => api_analytics_langs(conn, query),
+        "/api/backup/status" => api_backup_status(conn),
+        "/api/backup/config" => api_backup_config(conn, &mut request, query),
         "/api/backup/test" => api_backup_test(&mut request, query),
-        "/api/backup/run" => api_backup_run(&conn, &mut request, query),
-        "/api/backup/restore" => api_backup_restore(&conn, &mut request, query),
+        "/api/backup/run" => api_backup_run(conn, &mut request, query),
+        "/api/backup/restore" => api_backup_restore(conn, &mut request, query),
         p if p.starts_with("/api/commit/") => {
-            api_commit(&conn, p.trim_start_matches("/api/commit/"))
+            api_commit(conn, p.trim_start_matches("/api/commit/"))
         }
         "/api/commit" => {
             let sha = param(query, "sha").unwrap_or_default();
-            api_commit(&conn, &sha)
+            api_commit(conn, &sha)
         }
         p if p.starts_with("/api/related/") => {
-            api_related(&conn, p.trim_start_matches("/api/related/"))
+            api_related(conn, p.trim_start_matches("/api/related/"))
         }
         p if p.starts_with("/api/session/") => {
-            api_session(&conn, p.trim_start_matches("/api/session/"), query)
+            api_session(conn, p.trim_start_matches("/api/session/"), query)
         }
         _ => Ok(Response::from_string("not found")
             .with_status_code(404)
@@ -265,8 +271,12 @@ fn encoded_body(body: Vec<u8>) -> Response<std::io::Cursor<Vec<u8>>> {
         if enc.write_all(&body).is_ok() {
             if let Ok(gz) = enc.finish() {
                 return Response::from_data(gz)
-                    .with_header(Header::from_bytes(&b"Content-Encoding"[..], &b"gzip"[..]).unwrap())
-                    .with_header(Header::from_bytes(&b"Vary"[..], &b"Accept-Encoding"[..]).unwrap());
+                    .with_header(
+                        Header::from_bytes(&b"Content-Encoding"[..], &b"gzip"[..]).unwrap(),
+                    )
+                    .with_header(
+                        Header::from_bytes(&b"Vary"[..], &b"Accept-Encoding"[..]).unwrap(),
+                    );
             }
         }
     }
@@ -279,14 +289,14 @@ fn html(body: &str) -> Result<Boxed> {
             Header::from_bytes(&b"Content-Type"[..], &b"text/html; charset=utf-8"[..]).unwrap(),
         )
         .with_header(
-            Header::from_bytes(&b"Cache-Control"[..], &b"no-cache, no-store, must-revalidate"[..]).unwrap(),
+            Header::from_bytes(
+                &b"Cache-Control"[..],
+                &b"no-cache, no-store, must-revalidate"[..],
+            )
+            .unwrap(),
         )
-        .with_header(
-            Header::from_bytes(&b"Pragma"[..], &b"no-cache"[..]).unwrap(),
-        )
-        .with_header(
-            Header::from_bytes(&b"Expires"[..], &b"0"[..]).unwrap(),
-        )
+        .with_header(Header::from_bytes(&b"Pragma"[..], &b"no-cache"[..]).unwrap())
+        .with_header(Header::from_bytes(&b"Expires"[..], &b"0"[..]).unwrap())
         .boxed())
 }
 
@@ -344,12 +354,14 @@ fn api_sessions(conn: &Connection, query: &str) -> Result<Boxed> {
     let rows = index::recent_range(
         conn,
         limit,
-        tool.as_deref(),
-        project.as_deref(),
-        tag.as_deref(),
-        include_subagents,
-        since.as_deref(),
-        until.as_deref(),
+        &index::ListQuery {
+            tool: tool.as_deref(),
+            project: project.as_deref(),
+            tag: tag.as_deref(),
+            since: since.as_deref(),
+            until: until.as_deref(),
+            include_subagents,
+        },
         index::SessionSort::parse(param(query, "sort").as_deref().unwrap_or("")),
     )?;
     json_response(json!(rows.iter().map(row_json).collect::<Vec<_>>()))
@@ -379,7 +391,12 @@ fn api_search(conn: &Connection, query: &str) -> Result<Boxed> {
     let session_terms_raw = param(query, "session_terms");
     let session_terms: Vec<&str> = session_terms_raw
         .as_deref()
-        .map(|s| s.split(',').map(str::trim).filter(|w| !w.is_empty()).collect())
+        .map(|s| {
+            s.split(',')
+                .map(str::trim)
+                .filter(|w| !w.is_empty())
+                .collect()
+        })
         .unwrap_or_default();
 
     if qt.is_empty() && session_terms.is_empty() {
@@ -504,12 +521,20 @@ fn api_tag(conn: &Connection, query: &str) -> Result<Boxed> {
     let row = matches.first().context("session not found")?;
 
     if let Some(add) = param(query, "add") {
-        for t in add.split([',', ' ']).map(str::trim).filter(|s| !s.is_empty()) {
+        for t in add
+            .split([',', ' '])
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
             let _ = index::add_tag(conn, &row.session_id, t);
         }
     }
     if let Some(rm) = param(query, "rm") {
-        for t in rm.split([',', ' ']).map(str::trim).filter(|s| !s.is_empty()) {
+        for t in rm
+            .split([',', ' '])
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
             let _ = index::remove_tag(conn, &row.session_id, t);
         }
     }
@@ -527,7 +552,9 @@ fn api_tag(conn: &Connection, query: &str) -> Result<Boxed> {
         .map(|(t, c)| json!({ "tag": t, "count": c }))
         .collect();
 
-    json_response(json!({ "ok": true, "session_id": row.session_id, "tags": tags, "all_tags": all_tags }))
+    json_response(
+        json!({ "ok": true, "session_id": row.session_id, "tags": tags, "all_tags": all_tags }),
+    )
 }
 
 fn api_sync(conn: &mut Connection, sync_lock: &std::sync::Mutex<()>) -> Result<Boxed> {
@@ -573,13 +600,19 @@ fn session_cache_key(row: &index::SessionRow) -> String {
     let meta = std::fs::metadata(&row.path).ok();
     let len = meta.as_ref().map(|m| m.len());
     let mtime = meta.and_then(|m| m.modified().ok());
-    format!("{}|{}|{len:?}|{mtime:?}|{}", row.session_id, row.path, row.archived)
+    format!(
+        "{}|{}|{len:?}|{mtime:?}|{}",
+        row.session_id, row.path, row.archived
+    )
 }
 
 fn load_session_cached(
     conn: &Connection,
     row: &index::SessionRow,
-) -> Result<(serde_json::Value, std::sync::Arc<Vec<crate::model::Message>>)> {
+) -> Result<(
+    serde_json::Value,
+    std::sync::Arc<Vec<crate::model::Message>>,
+)> {
     let key = session_cache_key(row);
     {
         let cache = SESSION_CACHE.lock().unwrap_or_else(|e| e.into_inner());
@@ -654,7 +687,10 @@ fn api_session(conn: &Connection, id: &str, query: &str) -> Result<Boxed> {
     }
     v["role_counts"] = json!(counts);
     v["outline"] = session_outline(&messages);
-    let session_parent_id = v.get("parent_id").and_then(|p| p.as_str()).map(str::to_owned);
+    let session_parent_id = v
+        .get("parent_id")
+        .and_then(|p| p.as_str())
+        .map(str::to_owned);
     if row.archived {
         v["archived"] = json!(true);
     }
@@ -698,11 +734,14 @@ fn api_session(conn: &Connection, id: &str, query: &str) -> Result<Boxed> {
     v["project_root"] = json!(clean_proj);
     let commits = index::get_session_commits(conn, &row.session_id).unwrap_or_default();
     if !commits.is_empty() {
-        v["commits"] = json!(commits.into_iter().map(|(sha, msg, ts)| json!({
-            "sha": sha,
-            "message": msg,
-            "timestamp": ts,
-        })).collect::<Vec<_>>());
+        v["commits"] = json!(commits
+            .into_iter()
+            .map(|(sha, msg, ts)| json!({
+                "sha": sha,
+                "message": msg,
+                "timestamp": ts,
+            }))
+            .collect::<Vec<_>>());
     }
     json_response(v)
 }
@@ -710,21 +749,28 @@ fn api_session(conn: &Connection, id: &str, query: &str) -> Result<Boxed> {
 fn api_commit(conn: &Connection, sha: &str) -> Result<Boxed> {
     let clean = sha.trim();
     if clean.is_empty() {
-        return Ok(Response::from_string(json!({ "error": "missing commit sha" }).to_string())
-            .with_status_code(400)
-            .boxed());
+        return Ok(
+            Response::from_string(json!({ "error": "missing commit sha" }).to_string())
+                .with_status_code(400)
+                .boxed(),
+        );
     }
     if let Some(row) = index::find_session_by_commit(conn, clean)? {
         let mut val = row_json(&row);
         let commits = index::get_session_commits(conn, &row.session_id).unwrap_or_default();
-        val["commits"] = json!(commits.into_iter().map(|(s, m, t)| json!({
-            "sha": s, "message": m, "timestamp": t
-        })).collect::<Vec<_>>());
+        val["commits"] = json!(commits
+            .into_iter()
+            .map(|(s, m, t)| json!({
+                "sha": s, "message": m, "timestamp": t
+            }))
+            .collect::<Vec<_>>());
         json_response(val)
     } else {
-        Ok(Response::from_string(json!({ "error": "not found", "commit": clean }).to_string())
-            .with_status_code(404)
-            .boxed())
+        Ok(
+            Response::from_string(json!({ "error": "not found", "commit": clean }).to_string())
+                .with_status_code(404)
+                .boxed(),
+        )
     }
 }
 
@@ -944,7 +990,14 @@ fn api_analytics(conn: &Connection) -> Result<Boxed> {
             projects.push(project);
             projects.len() - 1
         });
-        sessions.push(json!([start, end, t, p, r.get::<_, i64>(4)?, r.get::<_, i64>(5)?]));
+        sessions.push(json!([
+            start,
+            end,
+            t,
+            p,
+            r.get::<_, i64>(4)?,
+            r.get::<_, i64>(5)?
+        ]));
     }
 
     let count = |sql: &str| -> i64 { conn.query_row(sql, [], |r| r.get(0)).unwrap_or(0) };
@@ -1030,17 +1083,23 @@ fn api_snippet_delete(conn: &Connection, query: &str) -> Result<Boxed> {
     json_response(json!({ "ok": ok, "id": id }))
 }
 
-fn api_snippet_rename(conn: &Connection, req: &mut tiny_http::Request, query: &str) -> Result<Boxed> {
+fn api_snippet_rename(
+    conn: &Connection,
+    req: &mut tiny_http::Request,
+    query: &str,
+) -> Result<Boxed> {
     let mut body = String::new();
     let _ = req.as_reader().read_to_string(&mut body);
     let json_body: Option<serde_json::Value> = serde_json::from_str(&body).ok();
 
-    let id: i64 = json_body.as_ref()
+    let id: i64 = json_body
+        .as_ref()
         .and_then(|v| v.get("id").and_then(|n| n.as_i64()))
         .or_else(|| param(query, "id").and_then(|s| s.parse().ok()))
         .context("missing id")?;
 
-    let title = json_body.as_ref()
+    let title = json_body
+        .as_ref()
         .and_then(|v| v.get("title").and_then(|s| s.as_str()).map(String::from))
         .or_else(|| param(query, "title"))
         .context("missing title")?;
@@ -1054,57 +1113,80 @@ fn api_snippet_save(conn: &Connection, req: &mut tiny_http::Request, query: &str
     let _ = req.as_reader().read_to_string(&mut body);
     let json_body: Option<serde_json::Value> = serde_json::from_str(&body).ok();
 
-    let session_id = json_body.as_ref()
-        .and_then(|v| v.get("session_id").and_then(|s| s.as_str()).map(String::from))
+    let session_id = json_body
+        .as_ref()
+        .and_then(|v| {
+            v.get("session_id")
+                .and_then(|s| s.as_str())
+                .map(String::from)
+        })
         .or_else(|| param(query, "session_id"))
         .context("missing session_id")?;
 
-    let message_idx: usize = json_body.as_ref()
-        .and_then(|v| v.get("message_idx").and_then(|n| n.as_u64()).map(|n| n as usize))
+    let message_idx: usize = json_body
+        .as_ref()
+        .and_then(|v| {
+            v.get("message_idx")
+                .and_then(|n| n.as_u64())
+                .map(|n| n as usize)
+        })
         .or_else(|| param(query, "message_idx").and_then(|s| s.parse().ok()))
         .unwrap_or(0);
 
-    let title = json_body.as_ref()
+    let title = json_body
+        .as_ref()
         .and_then(|v| v.get("title").and_then(|s| s.as_str()).map(String::from))
         .or_else(|| param(query, "title"))
         .unwrap_or_else(|| "Saved snippet".to_string());
 
-    let lang = json_body.as_ref()
+    let lang = json_body
+        .as_ref()
         .and_then(|v| v.get("lang").and_then(|s| s.as_str()).map(String::from))
         .or_else(|| param(query, "lang"));
 
-    let content = json_body.as_ref()
+    let content = json_body
+        .as_ref()
         .and_then(|v| v.get("content").and_then(|s| s.as_str()).map(String::from))
         .or_else(|| param(query, "content"))
         .context("missing content")?;
 
-    let tags = json_body.as_ref()
+    let tags = json_body
+        .as_ref()
         .and_then(|v| v.get("tags").and_then(|s| s.as_str()).map(String::from))
         .or_else(|| param(query, "tags"));
 
-    let tool = json_body.as_ref()
+    let tool = json_body
+        .as_ref()
         .and_then(|v| v.get("tool").and_then(|s| s.as_str()).map(String::from))
         .or_else(|| param(query, "tool"));
 
-    let role = json_body.as_ref()
+    let role = json_body
+        .as_ref()
         .and_then(|v| v.get("role").and_then(|s| s.as_str()).map(String::from))
         .or_else(|| param(query, "role"));
 
-    let message_ts = json_body.as_ref()
-        .and_then(|v| v.get("message_ts").and_then(|s| s.as_str()).map(String::from))
+    let message_ts = json_body
+        .as_ref()
+        .and_then(|v| {
+            v.get("message_ts")
+                .and_then(|s| s.as_str())
+                .map(String::from)
+        })
         .or_else(|| param(query, "message_ts"));
 
     let id = index::save_snippet(
         conn,
-        &session_id,
-        message_idx,
-        &title,
-        lang.as_deref(),
-        &content,
-        tags.as_deref(),
-        tool.as_deref(),
-        role.as_deref(),
-        message_ts.as_deref(),
+        &index::NewSnippet {
+            session_id: &session_id,
+            message_idx,
+            title: &title,
+            lang: lang.as_deref(),
+            content: &content,
+            tags: tags.as_deref(),
+            tool: tool.as_deref(),
+            role: role.as_deref(),
+            message_ts: message_ts.as_deref(),
+        },
     )?;
 
     json_response(json!({ "ok": true, "id": id }))
@@ -1243,8 +1325,13 @@ fn api_analytics_langs(conn: &Connection, query: &str) -> Result<Boxed> {
              AND (?2 IS NULL OR julianday(started) <= julianday(?2))
          )",
     )?;
-    let mut langs: std::collections::BTreeMap<&'static str, (std::collections::HashSet<String>, std::collections::HashSet<String>)> =
-        Default::default();
+    let mut langs: std::collections::BTreeMap<
+        &'static str,
+        (
+            std::collections::HashSet<String>,
+            std::collections::HashSet<String>,
+        ),
+    > = Default::default();
     let mut rows = stmt.query(rusqlite::params![since, until])?;
     while let Some(r) = rows.next()? {
         let path: String = r.get(0)?;
@@ -1260,13 +1347,19 @@ fn api_analytics_langs(conn: &Connection, query: &str) -> Result<Boxed> {
     out.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
     json_response(json!(out
         .iter()
-        .map(|(lang, files, sessions)| json!({ "lang": lang, "files": files, "sessions": sessions }))
+        .map(
+            |(lang, files, sessions)| json!({ "lang": lang, "files": files, "sessions": sessions })
+        )
         .collect::<Vec<_>>()))
 }
 
 /// A display language for a path, by extension (or well-known file name).
 fn language_of(path: &str) -> &'static str {
-    let name = path.rsplit(['/', '\\']).next().unwrap_or(path).to_ascii_lowercase();
+    let name = path
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or(path)
+        .to_ascii_lowercase();
     match name.as_str() {
         "dockerfile" => return "Docker",
         "makefile" => return "Make",
@@ -1311,10 +1404,11 @@ fn language_of(path: &str) -> &'static str {
     }
 }
 
-
 fn api_backup_status(conn: &Connection) -> Result<Boxed> {
     let cfg = crate::backup::get_backup_config(conn)?;
-    let total: i64 = conn.query_row("SELECT count(*) FROM files", [], |r| r.get(0)).unwrap_or(0);
+    let total: i64 = conn
+        .query_row("SELECT count(*) FROM files", [], |r| r.get(0))
+        .unwrap_or(0);
     let progress = crate::backup::get_progress();
     json_response(json!({
         "ok": true,
@@ -1327,11 +1421,16 @@ fn api_backup_status(conn: &Connection) -> Result<Boxed> {
     }))
 }
 
-fn api_backup_config(conn: &Connection, req: &mut tiny_http::Request, query: &str) -> Result<Boxed> {
+fn api_backup_config(
+    conn: &Connection,
+    req: &mut tiny_http::Request,
+    query: &str,
+) -> Result<Boxed> {
     let mut body = String::new();
     let _ = req.as_reader().read_to_string(&mut body);
     let json_body: Option<serde_json::Value> = serde_json::from_str(&body).ok();
-    let repo_url = json_body.as_ref()
+    let repo_url = json_body
+        .as_ref()
         .and_then(|v| v.get("repo_url").and_then(|s| s.as_str()).map(String::from))
         .or_else(|| param(query, "repo_url"))
         .context("missing repo_url")?;
@@ -1344,7 +1443,8 @@ fn api_backup_test(req: &mut tiny_http::Request, query: &str) -> Result<Boxed> {
     let mut body = String::new();
     let _ = req.as_reader().read_to_string(&mut body);
     let json_body: Option<serde_json::Value> = serde_json::from_str(&body).ok();
-    let repo_url = json_body.as_ref()
+    let repo_url = json_body
+        .as_ref()
         .and_then(|v| v.get("repo_url").and_then(|s| s.as_str()).map(String::from))
         .or_else(|| param(query, "repo_url"))
         .unwrap_or_default();
@@ -1362,7 +1462,8 @@ fn api_backup_run(conn: &Connection, req: &mut tiny_http::Request, query: &str) 
     let mut body = String::new();
     let _ = req.as_reader().read_to_string(&mut body);
     let json_body: Option<serde_json::Value> = serde_json::from_str(&body).ok();
-    let explicit_url = json_body.as_ref()
+    let explicit_url = json_body
+        .as_ref()
         .and_then(|v| v.get("repo_url").and_then(|s| s.as_str()).map(String::from))
         .or_else(|| param(query, "repo_url"));
 
@@ -1412,11 +1513,16 @@ fn api_backup_run(conn: &Connection, req: &mut tiny_http::Request, query: &str) 
     }))
 }
 
-fn api_backup_restore(conn: &Connection, req: &mut tiny_http::Request, query: &str) -> Result<Boxed> {
+fn api_backup_restore(
+    conn: &Connection,
+    req: &mut tiny_http::Request,
+    query: &str,
+) -> Result<Boxed> {
     let mut body = String::new();
     let _ = req.as_reader().read_to_string(&mut body);
     let json_body: Option<serde_json::Value> = serde_json::from_str(&body).ok();
-    let explicit_url = json_body.as_ref()
+    let explicit_url = json_body
+        .as_ref()
         .and_then(|v| v.get("repo_url").and_then(|s| s.as_str()).map(String::from))
         .or_else(|| param(query, "repo_url"));
 
@@ -1531,7 +1637,11 @@ mod tests {
         let (remote, branch) = detect_git_remote_and_branch(Path::new("."));
         assert!(remote.is_some(), "detects git remote for current repo");
         let r = remote.unwrap();
-        assert!(r.contains("wikiagents"), "remote URL contains wikiagents: {}", r);
+        assert!(
+            r.contains("wikiagents"),
+            "remote URL contains wikiagents: {}",
+            r
+        );
         assert!(branch.is_some(), "detects git branch");
     }
 }

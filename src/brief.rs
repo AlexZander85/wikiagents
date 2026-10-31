@@ -87,8 +87,13 @@ fn segment(session: &Session) -> Vec<Turn> {
             Role::User => {
                 let cleaned = clean(&text);
                 if is_substantive_request(&cleaned) {
-                    let slash = cleaned.starts_with('/') && !cleaned.trim().contains(char::is_whitespace);
-                    turns.push(Turn { request: cleaned, slash, ..Default::default() });
+                    let slash =
+                        cleaned.starts_with('/') && !cleaned.trim().contains(char::is_whitespace);
+                    turns.push(Turn {
+                        request: cleaned,
+                        slash,
+                        ..Default::default()
+                    });
                 }
             }
             Role::Assistant => {
@@ -173,7 +178,9 @@ fn clean(text: &str) -> String {
     let s = strip_tag_markers(&s);
     // "The handoff plugin sent a message: <request>" - keep the request.
     let s = match s.find(" plugin sent a message:") {
-        Some(i) if i < 60 && s.starts_with("The ") => s[i + " plugin sent a message:".len()..].to_string(),
+        Some(i) if i < 60 && s.starts_with("The ") => {
+            s[i + " plugin sent a message:".len()..].to_string()
+        }
         _ => s,
     };
     let mut out = String::with_capacity(s.len());
@@ -209,7 +216,9 @@ fn strip_tag_markers(s: &str) -> String {
                 j += 1;
             }
             let name_start = j;
-            while j < bytes.len() && (bytes[j].is_ascii_lowercase() || bytes[j] == b'-' || bytes[j] == b'_') {
+            while j < bytes.len()
+                && (bytes[j].is_ascii_lowercase() || bytes[j] == b'-' || bytes[j] == b'_')
+            {
                 j += 1;
             }
             if j > name_start + 1 {
@@ -268,7 +277,10 @@ fn parse_tool(text: &str, event: Option<&ToolEvent>) -> Option<ToolLine> {
     let split = body.rfind(" ⇒ ")?;
     let (head, tail) = (&body[..split], &body[split + " ⇒ ".len()..]);
     let (name, arg) = match head.find('(') {
-        Some(p) => (&head[..p], head[p + 1..].strip_suffix(')').unwrap_or(&head[p + 1..])),
+        Some(p) => (
+            &head[..p],
+            head[p + 1..].strip_suffix(')').unwrap_or(&head[p + 1..]),
+        ),
         None => (head, ""),
     };
     let status = if tail.starts_with("ok") {
@@ -278,7 +290,10 @@ fn parse_tool(text: &str, event: Option<&ToolEvent>) -> Option<ToolLine> {
     } else {
         Status::Pending
     };
-    let error = tail.split_once(" — ").map(|(_, e)| e.trim().to_string()).unwrap_or_default();
+    let error = tail
+        .split_once(" — ")
+        .map(|(_, e)| e.trim().to_string())
+        .unwrap_or_default();
     let (output, full) = match event {
         Some(ToolEvent::Summary(s)) => (s.output.clone(), full_command(&s.args)),
         _ => (None, None),
@@ -286,14 +301,25 @@ fn parse_tool(text: &str, event: Option<&ToolEvent>) -> Option<ToolLine> {
     // The compact line cuts a long command at 120 characters; the structured
     // call, when there is one, still has all of it.
     let arg = full.unwrap_or_else(|| arg.trim().to_string());
-    Some(ToolLine { name: name.trim().to_string(), arg, status, error, output })
+    Some(ToolLine {
+        name: name.trim().to_string(),
+        arg,
+        status,
+        error,
+        output,
+    })
 }
 
 fn full_command(args: &serde_json::Value) -> Option<String> {
     let v = args.get("command").or_else(|| args.get("cmd"))?;
     match v {
         serde_json::Value::String(s) => Some(s.clone()),
-        serde_json::Value::Array(a) => Some(a.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>().join(" ")),
+        serde_json::Value::Array(a) => Some(
+            a.iter()
+                .filter_map(|x| x.as_str())
+                .collect::<Vec<_>>()
+                .join(" "),
+        ),
         _ => None,
     }
 }
@@ -305,9 +331,22 @@ fn is_edit_tool(name: &str) -> bool {
     }
     matches!(
         n.as_str(),
-        "edit" | "write" | "multiedit" | "notebookedit" | "apply_patch" | "str_replace_editor"
-            | "str_replace_based_edit_tool" | "create_file" | "write_file" | "edit_file" | "replace"
-            | "patch" | "insert" | "create" | "write_to_file" | "replace_in_file"
+        "edit"
+            | "write"
+            | "multiedit"
+            | "notebookedit"
+            | "apply_patch"
+            | "str_replace_editor"
+            | "str_replace_based_edit_tool"
+            | "create_file"
+            | "write_file"
+            | "edit_file"
+            | "replace"
+            | "patch"
+            | "insert"
+            | "create"
+            | "write_to_file"
+            | "replace_in_file"
     ) || n.ends_with("_edit")
         || n.ends_with("_write")
 }
@@ -315,8 +354,17 @@ fn is_edit_tool(name: &str) -> bool {
 fn is_command_tool(name: &str) -> bool {
     matches!(
         name.to_ascii_lowercase().as_str(),
-        "bash" | "shell" | "exec_command" | "powershell" | "run_terminal_cmd" | "run_command"
-            | "execute_command" | "terminal" | "local_shell" | "run_shell_command" | "shell_command"
+        "bash"
+            | "shell"
+            | "exec_command"
+            | "powershell"
+            | "run_terminal_cmd"
+            | "run_command"
+            | "execute_command"
+            | "terminal"
+            | "local_shell"
+            | "run_shell_command"
+            | "shell_command"
     )
 }
 
@@ -339,8 +387,13 @@ fn command_key(cmd: &str) -> String {
         .unwrap_or(cmd);
     let segment = segment.split('|').next().unwrap_or(segment);
     // Skip `VAR=value` prefixes and wrappers like `timeout 450` or `sudo`.
-    const WRAPPERS: &[&str] = &["timeout", "sudo", "env", "nohup", "time", "nice", "exec", "command"];
-    let mut tokens = segment.split_whitespace().filter(|t| !is_assignment(t)).peekable();
+    const WRAPPERS: &[&str] = &[
+        "timeout", "sudo", "env", "nohup", "time", "nice", "exec", "command",
+    ];
+    let mut tokens = segment
+        .split_whitespace()
+        .filter(|t| !is_assignment(t))
+        .peekable();
     while let Some(t) = tokens.peek() {
         if WRAPPERS.contains(t) || t.chars().all(|c| c.is_ascii_digit()) {
             tokens.next();
@@ -372,16 +425,42 @@ fn command_key(cmd: &str) -> String {
                 return format!("{prog} -m {module}");
             }
         }
-        return if all.iter().any(|t| t.starts_with("<<") || *t == "-" || *t == "-c") {
+        return if all
+            .iter()
+            .any(|t| t.starts_with("<<") || *t == "-" || *t == "-c")
+        {
             format!("{prog} (inline)")
         } else {
             prog
         };
     }
-    let rest: Vec<&str> = all.iter().copied().filter(|t| !t.starts_with('-')).take(2).collect();
+    let rest: Vec<&str> = all
+        .iter()
+        .copied()
+        .filter(|t| !t.starts_with('-'))
+        .take(2)
+        .collect();
     let multi = [
-        "cargo", "npm", "pnpm", "yarn", "bun", "git", "go", "docker", "make", "dotnet", "gradle",
-        "mvn", "pip", "uv", "deno", "npx", "kubectl", "gh", "terraform", "poetry",
+        "cargo",
+        "npm",
+        "pnpm",
+        "yarn",
+        "bun",
+        "git",
+        "go",
+        "docker",
+        "make",
+        "dotnet",
+        "gradle",
+        "mvn",
+        "pip",
+        "uv",
+        "deno",
+        "npx",
+        "kubectl",
+        "gh",
+        "terraform",
+        "poetry",
     ];
     if multi.contains(&prog.as_str()) {
         if let Some(sub) = rest.first() {
@@ -415,26 +494,91 @@ fn is_assignment(token: &str) -> bool {
 
 fn is_check_command(key: &str) -> bool {
     const WORDS: &[&str] = &[
-        "test", "tests", "build", "check", "lint", "clippy", "tsc", "pytest", "jest", "vitest", "fmt",
-        "compile", "py_compile", "typecheck", "verify", "eslint", "ruff", "mypy", "smoke", "e2e",
+        "test",
+        "tests",
+        "build",
+        "check",
+        "lint",
+        "clippy",
+        "tsc",
+        "pytest",
+        "jest",
+        "vitest",
+        "fmt",
+        "compile",
+        "py_compile",
+        "typecheck",
+        "verify",
+        "eslint",
+        "ruff",
+        "mypy",
+        "smoke",
+        "e2e",
     ];
-    key.split_whitespace().any(|token| {
-        WORDS.contains(&token) || token.split(['_', '.']).any(|w| WORDS.contains(&w))
-    })
+    key.split_whitespace()
+        .any(|token| WORDS.contains(&token) || token.split(['_', '.']).any(|w| WORDS.contains(&w)))
 }
 
 /// Commands that only look around (read, list, search, wait): counted on one
 /// line instead of listed.
 fn is_lookup_command(key: &str) -> bool {
     const PROGS: &[&str] = &[
-        "grep", "rg", "sed", "cat", "ls", "head", "tail", "echo", "find", "wc", "for", "while", "cd",
-        "pwd", "dir", "type", "awk", "sort", "uniq", "cut", "tr", "xargs", "printf", "sleep", "stat",
-        "file", "which", "where", "tree", "less", "more", "true", "false", "test", "du", "df", "nl",
-        "curl", "Invoke-WebRequest", "Invoke-RestMethod", "Start-Sleep", "Set-Location",
+        "grep",
+        "rg",
+        "sed",
+        "cat",
+        "ls",
+        "head",
+        "tail",
+        "echo",
+        "find",
+        "wc",
+        "for",
+        "while",
+        "cd",
+        "pwd",
+        "dir",
+        "type",
+        "awk",
+        "sort",
+        "uniq",
+        "cut",
+        "tr",
+        "xargs",
+        "printf",
+        "sleep",
+        "stat",
+        "file",
+        "which",
+        "where",
+        "tree",
+        "less",
+        "more",
+        "true",
+        "false",
+        "test",
+        "du",
+        "df",
+        "nl",
+        "curl",
+        "Invoke-WebRequest",
+        "Invoke-RestMethod",
+        "Start-Sleep",
+        "Set-Location",
     ];
     const GIT: &[&str] = &[
-        "git show", "git log", "git status", "git diff", "git branch", "git rev-parse", "git remote",
-        "git ls-files", "git config", "git fetch", "git blame", "git grep",
+        "git show",
+        "git log",
+        "git status",
+        "git diff",
+        "git branch",
+        "git rev-parse",
+        "git remote",
+        "git ls-files",
+        "git config",
+        "git fetch",
+        "git blame",
+        "git grep",
     ];
     const PS: &[&str] = &[
         "Get-", "Select-", "Test-", "Write-", "Out-", "Format-", "Measure-", "Where-", "ForEach-",
@@ -448,11 +592,32 @@ fn is_lookup_command(key: &str) -> bool {
 }
 
 const PASS_KEYS: &[&str] = &[
-    "test result:", "passed", "Passed", "✓", "success", "Success", "Finished", "Tests:", "OK", "BUILD SUCCESS",
+    "test result:",
+    "passed",
+    "Passed",
+    "✓",
+    "success",
+    "Success",
+    "Finished",
+    "Tests:",
+    "OK",
+    "BUILD SUCCESS",
 ];
 const FAIL_KEYS: &[&str] = &[
-    "error[", "error:", "Error:", "Error", "Exception", "FAILED", "FAIL", "failed", "denied", "not found",
-    "No such", "cannot", "Cannot", "fatal:",
+    "error[",
+    "error:",
+    "Error:",
+    "Error",
+    "Exception",
+    "FAILED",
+    "FAIL",
+    "failed",
+    "denied",
+    "not found",
+    "No such",
+    "cannot",
+    "Cannot",
+    "fatal:",
 ];
 
 /// The line of a command's output that says how it went: a passing line for
@@ -463,25 +628,42 @@ fn outcome_line(output: &str, ok: bool) -> Option<String> {
         .lines()
         .rev()
         .map(|l| strip_ansi(l.trim()))
-        .find(|l| l.len() < 300 && !l.starts_with("Traceback") && keys.iter().any(|k| l.contains(k)))
+        .find(|l| {
+            l.len() < 300 && !l.starts_with("Traceback") && keys.iter().any(|k| l.contains(k))
+        })
         .map(|l| truncate_words(&l, 120))
 }
 
 /// A refusal is the person saying no, not the work failing.
 fn is_rejection(x: &ToolLine) -> bool {
-    let head: String = x.output.as_deref().unwrap_or("").chars().take(300).collect();
+    let head: String = x
+        .output
+        .as_deref()
+        .unwrap_or("")
+        .chars()
+        .take(300)
+        .collect();
     let text = format!("{} {head}", x.error);
-    text.contains("doesn't want to proceed") || text.contains("was rejected") || text.contains("User refused")
+    text.contains("doesn't want to proceed")
+        || text.contains("was rejected")
+        || text.contains("User refused")
 }
 
 /// An error's identity across repeats: first line, numbers and paths blanked.
 fn error_signature(line: &ToolLine) -> String {
     let from_output = line.output.as_deref().and_then(|o| outcome_line(o, false));
-    let vague = line.error.is_empty() || line.error.starts_with("Exit code") || line.error.starts_with("Traceback");
+    let vague = line.error.is_empty()
+        || line.error.starts_with("Exit code")
+        || line.error.starts_with("Traceback");
     let src = match from_output {
         Some(l) if vague => l,
         _ if !line.error.is_empty() => line.error.clone(),
-        _ => line.output.as_deref().and_then(|o| o.lines().find(|l| !l.trim().is_empty())).unwrap_or("").to_string(),
+        _ => line
+            .output
+            .as_deref()
+            .and_then(|o| o.lines().find(|l| !l.trim().is_empty()))
+            .unwrap_or("")
+            .to_string(),
     };
     let src = strip_tag_markers(&strip_ansi(&src));
     let words: Vec<String> = src
@@ -489,7 +671,8 @@ fn error_signature(line: &ToolLine) -> String {
         .map(|w| {
             if w.contains('/') || w.contains('\\') {
                 "…".to_string()
-            } else if w.chars().any(|c| c.is_ascii_digit()) && !w.chars().any(|c| c.is_alphabetic()) {
+            } else if w.chars().any(|c| c.is_ascii_digit()) && !w.chars().any(|c| c.is_alphabetic())
+            {
                 "N".to_string()
             } else {
                 w.to_string()
@@ -503,75 +686,342 @@ fn error_signature(line: &ToolLine) -> String {
 // Sentences and scoring
 
 const STOP: &[&str] = &[
-    "the", "and", "for", "that", "this", "with", "you", "are", "was", "but", "not", "have", "has",
-    "can", "will", "from", "all", "its", "it's", "into", "then", "than", "there", "here", "now",
-    "just", "also", "what", "when", "which", "would", "should", "could", "about", "some", "any",
-    "one", "two", "out", "use", "get", "let", "lets", "see", "they", "them", "our", "your", "their",
-    "been", "being", "were", "does", "did", "done", "only", "more", "most", "very", "how", "why",
-    "who", "each", "both", "same", "other", "such", "these", "those", "like", "make", "made",
-    "это", "что", "как", "для", "все", "всё", "так", "его", "она", "они", "оно", "был", "была",
-    "было", "были", "есть", "уже", "еще", "ещё", "или", "если", "чтобы", "при", "без", "над",
-    "под", "про", "через", "после", "перед", "между", "тоже", "также", "только", "можно", "нужно",
-    "надо", "будет", "этот", "эта", "эти", "того", "тот", "там", "тут", "здесь", "сейчас",
-    "теперь", "потом", "когда", "где", "чем", "кто", "ещё", "очень", "более", "менее", "вот",
-    "даже", "ведь", "лишь", "них", "ним", "нем", "нём", "мне", "меня", "мы", "вы", "вам", "нас",
-    "вас", "свой", "своё", "свои", "который", "которая", "которые", "которых", "один", "одна",
+    "the",
+    "and",
+    "for",
+    "that",
+    "this",
+    "with",
+    "you",
+    "are",
+    "was",
+    "but",
+    "not",
+    "have",
+    "has",
+    "can",
+    "will",
+    "from",
+    "all",
+    "its",
+    "it's",
+    "into",
+    "then",
+    "than",
+    "there",
+    "here",
+    "now",
+    "just",
+    "also",
+    "what",
+    "when",
+    "which",
+    "would",
+    "should",
+    "could",
+    "about",
+    "some",
+    "any",
+    "one",
+    "two",
+    "out",
+    "use",
+    "get",
+    "let",
+    "lets",
+    "see",
+    "they",
+    "them",
+    "our",
+    "your",
+    "their",
+    "been",
+    "being",
+    "were",
+    "does",
+    "did",
+    "done",
+    "only",
+    "more",
+    "most",
+    "very",
+    "how",
+    "why",
+    "who",
+    "each",
+    "both",
+    "same",
+    "other",
+    "such",
+    "these",
+    "those",
+    "like",
+    "make",
+    "made",
+    "это",
+    "что",
+    "как",
+    "для",
+    "все",
+    "всё",
+    "так",
+    "его",
+    "она",
+    "они",
+    "оно",
+    "был",
+    "была",
+    "было",
+    "были",
+    "есть",
+    "уже",
+    "еще",
+    "ещё",
+    "или",
+    "если",
+    "чтобы",
+    "при",
+    "без",
+    "над",
+    "под",
+    "про",
+    "через",
+    "после",
+    "перед",
+    "между",
+    "тоже",
+    "также",
+    "только",
+    "можно",
+    "нужно",
+    "надо",
+    "будет",
+    "этот",
+    "эта",
+    "эти",
+    "того",
+    "тот",
+    "там",
+    "тут",
+    "здесь",
+    "сейчас",
+    "теперь",
+    "потом",
+    "когда",
+    "где",
+    "чем",
+    "кто",
+    "ещё",
+    "очень",
+    "более",
+    "менее",
+    "вот",
+    "даже",
+    "ведь",
+    "лишь",
+    "них",
+    "ним",
+    "нем",
+    "нём",
+    "мне",
+    "меня",
+    "мы",
+    "вы",
+    "вам",
+    "нас",
+    "вас",
+    "свой",
+    "своё",
+    "свои",
+    "который",
+    "которая",
+    "которые",
+    "которых",
+    "один",
+    "одна",
 ];
 
 const DECISION: &[&str] = &[
-    "решил", "решили", "выбрал", "вместо", "потому что", "так как", "причина", "дело в том",
-    "оказалось", "корень", "поэтому", "decided", "instead", "because", "root cause", "turned out",
-    "the cause", "the issue was", "the problem was", "chose", "trade-off", "tradeoff", "so that",
+    "решил",
+    "решили",
+    "выбрал",
+    "вместо",
+    "потому что",
+    "так как",
+    "причина",
+    "дело в том",
+    "оказалось",
+    "корень",
+    "поэтому",
+    "decided",
+    "instead",
+    "because",
+    "root cause",
+    "turned out",
+    "the cause",
+    "the issue was",
+    "the problem was",
+    "chose",
+    "trade-off",
+    "tradeoff",
+    "so that",
 ];
 const RESULT: &[&str] = &[
-    "исправ", "работает", "готово", "проход", "прошли", "добавил", "добавлен", "реализ",
-    "заработал", "подтвержд", "закоммич", "запушен", "fixed", "works", "passing", "passes",
-    "implemented", "added", "resolved", "confirmed", "committed", "pushed", "verified",
+    "исправ",
+    "работает",
+    "готово",
+    "проход",
+    "прошли",
+    "добавил",
+    "добавлен",
+    "реализ",
+    "заработал",
+    "подтвержд",
+    "закоммич",
+    "запушен",
+    "fixed",
+    "works",
+    "passing",
+    "passes",
+    "implemented",
+    "added",
+    "resolved",
+    "confirmed",
+    "committed",
+    "pushed",
+    "verified",
 ];
 /// A reply that opens with one of these pushes back on what was done.
 const CORRECTION_START: &[&str] = &[
-    "нет", "не так", "не надо", "не нужно", "неправильно", "стоп", "подожди", "отмени", "верни",
-    "no", "stop", "wait", "actually", "don't", "do not", "revert", "undo", "wrong",
+    "нет",
+    "не так",
+    "не надо",
+    "не нужно",
+    "неправильно",
+    "стоп",
+    "подожди",
+    "отмени",
+    "верни",
+    "no",
+    "stop",
+    "wait",
+    "actually",
+    "don't",
+    "do not",
+    "revert",
+    "undo",
+    "wrong",
 ];
 /// Reproach anywhere near the start of a reply.
 const CORRECTION_ANY: &[&str] = &[
-    "не то ", "не так", "ты не ", "вы не ", "я же просил", "я просил", "зачем ты", "почему ты",
-    "не нужно было", "сломал", "по-прежнему не", "всё ещё не", "все еще не", "опять не",
-    "you didn't", "you did not", "not what i", "i asked", "why did you", "you broke",
-    "still doesn't", "still not", "that's wrong", "that is wrong",
+    "не то ",
+    "не так",
+    "ты не ",
+    "вы не ",
+    "я же просил",
+    "я просил",
+    "зачем ты",
+    "почему ты",
+    "не нужно было",
+    "сломал",
+    "по-прежнему не",
+    "всё ещё не",
+    "все еще не",
+    "опять не",
+    "you didn't",
+    "you did not",
+    "not what i",
+    "i asked",
+    "why did you",
+    "you broke",
+    "still doesn't",
+    "still not",
+    "that's wrong",
+    "that is wrong",
 ];
 
 fn is_correction(request: &str) -> bool {
     let opening: String = request.chars().take(300).collect::<String>().to_lowercase();
     let first_word_ok = |cue: &str| {
-        opening.strip_prefix(cue).is_some_and(|rest| {
-            rest.chars().next().is_none_or(|c| !c.is_alphanumeric())
-        })
+        opening
+            .strip_prefix(cue)
+            .is_some_and(|rest| rest.chars().next().is_none_or(|c| !c.is_alphanumeric()))
     };
     // At a word start: "тексты не" does not contain "ты не".
     let at_word = |cue: &str| {
         opening.match_indices(cue).any(|(i, _)| {
-            opening[..i].chars().next_back().is_none_or(|c| !c.is_alphanumeric())
+            opening[..i]
+                .chars()
+                .next_back()
+                .is_none_or(|c| !c.is_alphanumeric())
         })
     };
     CORRECTION_START.iter().any(|c| first_word_ok(c)) || CORRECTION_ANY.iter().any(|c| at_word(c))
 }
 const TODO: &[&str] = &[
-    "осталось", "следующ", "todo", "надо будет", "нужно будет", "не сделано", "не проверено",
-    "не закоммич", "на потом", "отложи", "follow-up", "follow up", "next step",
-    "remaining", "still need", "not yet", "deferred", "open question", "not verified", "not committed",
-    "nothing committed", "left to do",
+    "осталось",
+    "следующ",
+    "todo",
+    "надо будет",
+    "нужно будет",
+    "не сделано",
+    "не проверено",
+    "не закоммич",
+    "на потом",
+    "отложи",
+    "follow-up",
+    "follow up",
+    "next step",
+    "remaining",
+    "still need",
+    "not yet",
+    "deferred",
+    "open question",
+    "not verified",
+    "not committed",
+    "nothing committed",
+    "left to do",
 ];
 /// Replies that report a stop, not an outcome.
 const NOT_A_RESULT: &[&str] = &[
-    "you've hit your", "session limit", "waiting for", "ожидаю", "жду ", "usage limit", "rate limit",
+    "you've hit your",
+    "session limit",
+    "waiting for",
+    "ожидаю",
+    "жду ",
+    "usage limit",
+    "rate limit",
 ];
 /// Phrases that look like a TODO cue but say the opposite.
 const NOT_TODO: &[&str] = &["не осталось", "nothing left", "nothing remaining"];
 const BOILERPLATE: &[&str] = &[
-    "давайте", "сейчас ", "теперь ", "отлично", "хорошо,", "понял", "смотрю", "проверяю",
-    "посмотрю", "let me", "now i", "now let", "great", "perfect", "okay", "ok,", "i'll ", "i will ",
-    "let's ", "first,", "looking at", "i need to", "i see", "now ", "next,", "далее ", "сначала ",
+    "давайте",
+    "сейчас ",
+    "теперь ",
+    "отлично",
+    "хорошо,",
+    "понял",
+    "смотрю",
+    "проверяю",
+    "посмотрю",
+    "let me",
+    "now i",
+    "now let",
+    "great",
+    "perfect",
+    "okay",
+    "ok,",
+    "i'll ",
+    "i will ",
+    "let's ",
+    "first,",
+    "looking at",
+    "i need to",
+    "i see",
+    "now ",
+    "next,",
+    "далее ",
+    "сначала ",
 ];
 
 fn has_cue(lower: &str, cues: &[&str]) -> bool {
@@ -608,9 +1058,16 @@ fn sentences(text: &str) -> Vec<String> {
             if line.chars().all(|c| matches!(c, '|' | '-' | ':' | ' ')) {
                 continue;
             }
-            line.trim_matches('|').split('|').map(str::trim).filter(|c| !c.is_empty()).collect::<Vec<_>>().join(" · ")
+            line.trim_matches('|')
+                .split('|')
+                .map(str::trim)
+                .filter(|c| !c.is_empty())
+                .collect::<Vec<_>>()
+                .join(" · ")
         } else {
-            strip_markdown_prefix(line).replace("**", "").replace("__", "")
+            strip_markdown_prefix(line)
+                .replace("**", "")
+                .replace("__", "")
         };
         for s in split_sentences(&line) {
             let s = s.trim();
@@ -647,9 +1104,11 @@ fn split_sentences(line: &str) -> Vec<String> {
     let mut start = 0;
     let mut i = 0;
     while i < chars.len() {
-        if matches!(chars[i], '.' | '!' | '?' | '…') && i + 2 < chars.len() && chars[i + 1] == ' ' {
+        if matches!(chars[i], '.' | '!' | '?' | '…') && i + 2 < chars.len() && chars[i + 1] == ' '
+        {
             let next = chars[i + 2];
-            if next.is_uppercase() || next.is_ascii_digit() || matches!(next, '«' | '"' | '`' | '(') {
+            if next.is_uppercase() || next.is_ascii_digit() || matches!(next, '«' | '"' | '`' | '(')
+            {
                 out.push(chars[start..=i].iter().collect());
                 start = i + 2;
                 i += 2;
@@ -677,9 +1136,16 @@ struct Sentence {
 
 fn looks_like_path(s: &str) -> bool {
     s.split_whitespace().any(|w| {
-        let w = w.trim_matches(|c: char| !c.is_alphanumeric() && c != '/' && c != '\\' && c != '.' && c != '_');
+        let w = w.trim_matches(|c: char| {
+            !c.is_alphanumeric() && c != '/' && c != '\\' && c != '.' && c != '_'
+        });
         (w.contains('/') || w.contains('\\')) && w.len() > 3
-            || w.rsplit_once('.').is_some_and(|(stem, ext)| !stem.is_empty() && (1..=4).contains(&ext.len()) && ext.chars().all(|c| c.is_ascii_lowercase()) && stem.chars().any(|c| c.is_alphabetic()))
+            || w.rsplit_once('.').is_some_and(|(stem, ext)| {
+                !stem.is_empty()
+                    && (1..=4).contains(&ext.len())
+                    && ext.chars().all(|c| c.is_ascii_lowercase())
+                    && stem.chars().any(|c| c.is_alphabetic())
+            })
     })
 }
 
@@ -687,11 +1153,25 @@ fn score_all(turns: &[Turn]) -> Vec<Sentence> {
     let mut all = Vec::new();
     for (t, turn) in turns.iter().enumerate() {
         for s in sentences(&turn.request) {
-            all.push(Sentence { terms: terms(&s), text: s, turn: t, msg: 0, role: Role::User, score: 0.0 });
+            all.push(Sentence {
+                terms: terms(&s),
+                text: s,
+                turn: t,
+                msg: 0,
+                role: Role::User,
+                score: 0.0,
+            });
         }
         for (m, reply) in turn.replies.iter().enumerate() {
             for s in sentences(reply) {
-                all.push(Sentence { terms: terms(&s), text: s, turn: t, msg: m + 1, role: Role::Assistant, score: 0.0 });
+                all.push(Sentence {
+                    terms: terms(&s),
+                    text: s,
+                    turn: t,
+                    msg: m + 1,
+                    role: Role::Assistant,
+                    score: 0.0,
+                });
             }
         }
     }
@@ -702,13 +1182,20 @@ fn score_all(turns: &[Turn]) -> Vec<Sentence> {
             *df.entry(w.as_str()).or_default() += 1;
         }
     }
-    let idf: HashMap<String, f64> = df.into_iter().map(|(w, d)| (w.to_string(), (1.0 + n / d as f64).ln())).collect();
+    let idf: HashMap<String, f64> = df
+        .into_iter()
+        .map(|(w, d)| (w.to_string(), (1.0 + n / d as f64).ln()))
+        .collect();
     let last_quarter = turns.len().saturating_sub((turns.len() / 4).max(1));
     for s in &mut all {
         if s.terms.is_empty() {
             continue;
         }
-        let weight: f64 = s.terms.iter().map(|w| idf.get(w).copied().unwrap_or(0.0)).sum();
+        let weight: f64 = s
+            .terms
+            .iter()
+            .map(|w| idf.get(w).copied().unwrap_or(0.0))
+            .sum();
         let mut score = weight / ((s.terms.len() as f64) + 4.0).sqrt();
         let lower = s.text.to_lowercase();
         if s.text.contains('`') || looks_like_path(&s.text) {
@@ -751,7 +1238,12 @@ fn jaccard(a: &HashSet<String>, b: &HashSet<String>) -> f64 {
 
 /// Maximal marginal relevance: best-scoring sentences that are not about the
 /// same thing as one already chosen, until `budget` characters or `max` items.
-fn mmr<'a>(pool: &[&'a Sentence], taken: &[HashSet<String>], budget: usize, max: usize) -> Vec<&'a Sentence> {
+fn mmr<'a>(
+    pool: &[&'a Sentence],
+    taken: &[HashSet<String>],
+    budget: usize,
+    max: usize,
+) -> Vec<&'a Sentence> {
     const LAMBDA: f64 = 0.7;
     let mut chosen: Vec<&Sentence> = Vec::new();
     let mut seen: Vec<&HashSet<String>> = taken.iter().collect();
@@ -760,7 +1252,10 @@ fn mmr<'a>(pool: &[&'a Sentence], taken: &[HashSet<String>], budget: usize, max:
     while chosen.len() < max && !left.is_empty() {
         let mut best: Option<(usize, f64)> = None;
         for (i, s) in left.iter().enumerate() {
-            let sim = seen.iter().map(|t| jaccard(&s.terms, t)).fold(0.0, f64::max);
+            let sim = seen
+                .iter()
+                .map(|t| jaccard(&s.terms, t))
+                .fold(0.0, f64::max);
             if sim > 0.6 {
                 continue;
             }
@@ -818,7 +1313,9 @@ struct Labels {
 
 const RU: Labels = Labels {
     header: "Прошлая сессия",
-    stats: |t, m, c, e, f| format!("{t} ходов · {m} сообщений · {c} вызовов инструментов · {e} ошибок · {f} файлов изменено"),
+    stats: |t, m, c, e, f| {
+        format!("{t} ходов · {m} сообщений · {c} вызовов инструментов · {e} ошибок · {f} файлов изменено")
+    },
     goal: "Задача",
     outcome: "Итог",
     timeline: "Ход работы",
@@ -830,7 +1327,13 @@ const RU: Labels = Labels {
     more_files: |n| format!("… и ещё {n}"),
     commands: "Команды и проверки",
     last: "последний",
-    runs: |n, e| if e > 0 { format!("×{n}, ошибок {e}") } else { format!("×{n}") },
+    runs: |n, e| {
+        if e > 0 {
+            format!("×{n}, ошибок {e}")
+        } else {
+            format!("×{n}")
+        }
+    },
     errors: "Ошибки",
     fixed: "исправлено",
     unfixed: "не исправлено",
@@ -854,7 +1357,9 @@ const RU: Labels = Labels {
 
 const EN: Labels = Labels {
     header: "Previous session",
-    stats: |t, m, c, e, f| format!("{t} turns · {m} messages · {c} tool calls · {e} errors · {f} files changed"),
+    stats: |t, m, c, e, f| {
+        format!("{t} turns · {m} messages · {c} tool calls · {e} errors · {f} files changed")
+    },
     goal: "Goal",
     outcome: "Outcome",
     timeline: "How it went",
@@ -866,7 +1371,13 @@ const EN: Labels = Labels {
     more_files: |n| format!("… and {n} more"),
     commands: "Commands and checks",
     last: "last",
-    runs: |n, e| if e > 0 { format!("×{n}, {e} failed") } else { format!("×{n}") },
+    runs: |n, e| {
+        if e > 0 {
+            format!("×{n}, {e} failed")
+        } else {
+            format!("×{n}")
+        }
+    },
     errors: "Errors",
     fixed: "fixed",
     unfixed: "not fixed",
@@ -904,15 +1415,28 @@ impl<'a> Brief<'a> {
         let words: String = turns
             .iter()
             .flat_map(|t| t.request.split_whitespace())
-            .filter(|w| !w.contains(['/', '\\', '.', '_', '=', ':']) && w.chars().all(|c| c.is_alphabetic() || ",;!?()«»\"'-".contains(c)))
+            .filter(|w| {
+                !w.contains(['/', '\\', '.', '_', '=', ':'])
+                    && w.chars()
+                        .all(|c| c.is_alphabetic() || ",;!?()«»\"'-".contains(c))
+            })
             .collect();
         let letters = words.chars().filter(|c| c.is_alphabetic()).count().max(1);
-        let cyr = words.chars().filter(|c| matches!(c, 'а'..='я' | 'А'..='Я' | 'ё' | 'Ё')).count();
+        let cyr = words
+            .chars()
+            .filter(|c| matches!(c, 'а'..='я' | 'А'..='Я' | 'ё' | 'Ё'))
+            .count();
         // A fifth is enough: pasted logs and code in a Russian session are
         // English, the person's own words are not.
         let l = if cyr * 5 >= letters { &RU } else { &EN };
         let sentences = score_all(&turns);
-        Self { session, turns, sentences, budget, l }
+        Self {
+            session,
+            turns,
+            sentences,
+            budget,
+            l,
+        }
     }
 
     fn render(&self, include_tools: bool, include_source: bool) -> String {
@@ -934,7 +1458,11 @@ impl<'a> Brief<'a> {
         let open = self.open_items(b * 6 / 100);
         used_terms.extend(open.1);
         push_section(&mut out, self.l.timeline, &self.timeline(b * 22 / 100));
-        push_section(&mut out, self.l.key, &self.key_points(&mut used_terms, b * 12 / 100));
+        push_section(
+            &mut out,
+            self.l.key,
+            &self.key_points(&mut used_terms, b * 12 / 100),
+        );
         push_section(&mut out, self.l.corrections, &self.corrections(b * 6 / 100));
         push_section(&mut out, self.l.open, &open.0);
         push_section(&mut out, self.l.files, &self.files(b * 7 / 100));
@@ -951,10 +1479,18 @@ impl<'a> Brief<'a> {
     fn header(&self, include_source: bool) -> String {
         let s = self.session;
         let tool_calls: usize = self.turns.iter().map(|t| t.tools.len()).sum();
-        let errors: usize = self.turns.iter().flat_map(|t| &t.tools).filter(|t| t.status == Status::Error).count();
+        let errors: usize = self
+            .turns
+            .iter()
+            .flat_map(|t| &t.tools)
+            .filter(|t| t.status == Status::Error)
+            .count();
         let messages = s.messages.iter().filter(|m| !m.is_rewound).count();
         let source = if include_source {
-            format!("\n- Source: {}", crate::redact::redact(&s.path.display().to_string()))
+            format!(
+                "\n- Source: {}",
+                crate::redact::redact(&s.path.display().to_string())
+            )
         } else {
             String::new()
         };
@@ -966,12 +1502,22 @@ impl<'a> Brief<'a> {
             crate::redact::redact(&s.project),
             crate::util::fmt_date(s.started),
             source,
-            (self.l.stats)(self.turns.len(), messages, tool_calls, errors, self.changed_files().len()),
+            (self.l.stats)(
+                self.turns.len(),
+                messages,
+                tool_calls,
+                errors,
+                self.changed_files().len()
+            ),
         )
     }
 
     fn goal(&self, budget: usize) -> String {
-        let Some(first) = self.turns.iter().find(|t| !t.slash && !t.request.is_empty()) else {
+        let Some(first) = self
+            .turns
+            .iter()
+            .find(|t| !t.slash && !t.request.is_empty())
+        else {
             return String::new();
         };
         condense(&first.request, budget.max(300))
@@ -981,7 +1527,12 @@ impl<'a> Brief<'a> {
     fn outcome(&self, budget: usize) -> String {
         let budget = budget.max(400);
         let Some((t, m)) = self.turns.iter().enumerate().rev().find_map(|(t, turn)| {
-            turn.replies.iter().enumerate().rev().find(|(_, r)| r.chars().count() >= 60).map(|(m, _)| (t, m + 1))
+            turn.replies
+                .iter()
+                .enumerate()
+                .rev()
+                .find(|(_, r)| r.chars().count() >= 60)
+                .map(|(m, _)| (t, m + 1))
         }) else {
             return String::new();
         };
@@ -989,7 +1540,11 @@ impl<'a> Brief<'a> {
         if reply.len() <= budget {
             return demote_headings(&strip_code(reply));
         }
-        let pool: Vec<&Sentence> = self.sentences.iter().filter(|s| s.turn == t && s.msg == m).collect();
+        let pool: Vec<&Sentence> = self
+            .sentences
+            .iter()
+            .filter(|s| s.turn == t && s.msg == m)
+            .collect();
         let mut picked = mmr(&pool, &[], budget, 12);
         if let Some(first) = pool.first() {
             if !picked.iter().any(|p| std::ptr::eq(*p, *first)) {
@@ -997,7 +1552,11 @@ impl<'a> Brief<'a> {
             }
         }
         picked.sort_by_key(|s| pool.iter().position(|p| std::ptr::eq(*p, *s)));
-        picked.iter().map(|s| s.text.as_str()).collect::<Vec<_>>().join(" ")
+        picked
+            .iter()
+            .map(|s| s.text.as_str())
+            .collect::<Vec<_>>()
+            .join(" ")
     }
 
     /// One line per turn: request → result, with what the turn did. Long
@@ -1019,7 +1578,10 @@ impl<'a> Brief<'a> {
                 }
             }
             let mut used: usize = keep.iter().map(|&t| lines[t].len() + 1).sum();
-            let mut seen: Vec<HashSet<String>> = keep.iter().map(|&t| terms(&self.turns[t].request)).collect();
+            let mut seen: Vec<HashSet<String>> = keep
+                .iter()
+                .map(|&t| terms(&self.turns[t].request))
+                .collect();
             let mut cand: Vec<(usize, f64, HashSet<String>)> = real
                 .iter()
                 .copied()
@@ -1064,10 +1626,29 @@ impl<'a> Brief<'a> {
 
     fn turn_weight(&self, t: usize) -> f64 {
         let turn = &self.turns[t];
-        let best = self.sentences.iter().filter(|s| s.turn == t).map(|s| s.score).fold(0.0, f64::max);
-        let edits = turn.tools.iter().filter(|x| is_edit_tool(&x.name)).count().min(10) as f64;
-        let errors = turn.tools.iter().filter(|x| x.status == Status::Error).count().min(5) as f64;
-        let correction = if is_correction(&turn.request) { 0.3 } else { 0.0 };
+        let best = self
+            .sentences
+            .iter()
+            .filter(|s| s.turn == t)
+            .map(|s| s.score)
+            .fold(0.0, f64::max);
+        let edits = turn
+            .tools
+            .iter()
+            .filter(|x| is_edit_tool(&x.name))
+            .count()
+            .min(10) as f64;
+        let errors = turn
+            .tools
+            .iter()
+            .filter(|x| x.status == Status::Error)
+            .count()
+            .min(5) as f64;
+        let correction = if is_correction(&turn.request) {
+            0.3
+        } else {
+            0.0
+        };
         best + 0.04 * edits + 0.05 * errors + correction
     }
 
@@ -1083,13 +1664,28 @@ impl<'a> Brief<'a> {
             .iter()
             .filter(|s| s.turn == t && s.role == Role::Assistant)
             .max_by(|a, b| {
-                let bonus = |s: &Sentence| s.score + 0.15 * (s.msg as f64 / turn.replies.len().max(1) as f64);
+                let bonus = |s: &Sentence| {
+                    s.score + 0.15 * (s.msg as f64 / turn.replies.len().max(1) as f64)
+                };
                 bonus(a).total_cmp(&bonus(b))
             })
             .map(|s| truncate_words(&s.text, 140));
-        let edited: HashSet<&str> = turn.tools.iter().filter(|x| is_edit_tool(&x.name)).map(|x| x.arg.as_str()).collect();
-        let commands = turn.tools.iter().filter(|x| is_command_tool(&x.name)).count();
-        let errors = turn.tools.iter().filter(|x| x.status == Status::Error).count();
+        let edited: HashSet<&str> = turn
+            .tools
+            .iter()
+            .filter(|x| is_edit_tool(&x.name))
+            .map(|x| x.arg.as_str())
+            .collect();
+        let commands = turn
+            .tools
+            .iter()
+            .filter(|x| is_command_tool(&x.name))
+            .count();
+        let errors = turn
+            .tools
+            .iter()
+            .filter(|x| x.status == Status::Error)
+            .count();
         let mut tags = Vec::new();
         if !edited.is_empty() {
             tags.push(format!("✎{}", edited.len()));
@@ -1112,7 +1708,11 @@ impl<'a> Brief<'a> {
     }
 
     fn key_points(&self, used: &mut Vec<HashSet<String>>, budget: usize) -> String {
-        let pool: Vec<&Sentence> = self.sentences.iter().filter(|s| s.role == Role::Assistant).collect();
+        let pool: Vec<&Sentence> = self
+            .sentences
+            .iter()
+            .filter(|s| s.role == Role::Assistant)
+            .collect();
         let picked = mmr(&pool, used, budget, 10);
         used.extend(picked.iter().map(|s| s.terms.clone()));
         let mut picked = picked;
@@ -1157,7 +1757,10 @@ impl<'a> Brief<'a> {
             .iter()
             .filter(|s| {
                 let lower = s.text.to_lowercase();
-                s.role == Role::Assistant && s.turn >= from && has_cue(&lower, TODO) && !has_cue(&lower, NOT_TODO)
+                s.role == Role::Assistant
+                    && s.turn >= from
+                    && has_cue(&lower, TODO)
+                    && !has_cue(&lower, NOT_TODO)
             })
             .collect();
         let mut picked = mmr(&pool, &[], budget, 5);
@@ -1202,7 +1805,11 @@ impl<'a> Brief<'a> {
                 }
             }
         }
-        counts.sort_by(|a, b| a.2.cmp(&b.2).then(b.1.cmp(&a.1)).then_with(|| a.0.cmp(&b.0)));
+        counts.sort_by(|a, b| {
+            a.2.cmp(&b.2)
+                .then(b.1.cmp(&a.1))
+                .then_with(|| a.0.cmp(&b.0))
+        });
         counts
     }
 
@@ -1213,7 +1820,11 @@ impl<'a> Brief<'a> {
         let mut used = 0;
         let real: Vec<&(String, usize, bool)> = files.iter().filter(|f| !f.2).collect();
         for (i, (shown, n, _)) in real.iter().enumerate() {
-            let line = if *n > 1 { format!("`{shown}` ×{n}") } else { format!("`{shown}`") };
+            let line = if *n > 1 {
+                format!("`{shown}` ×{n}")
+            } else {
+                format!("`{shown}`")
+            };
             if used + line.len() > budget && i > 0 {
                 lines.push((self.l.more_files)(real.len() - i));
                 break;
@@ -1251,7 +1862,9 @@ impl<'a> Brief<'a> {
             let key = command_key(&x.arg);
             if is_lookup_command(&key) {
                 let first = key.split_whitespace().next().unwrap_or("").to_string();
-                let label = if first.starts_with(['$', '@', '{', '(', '[', '#', '\'', '"', '<', '&', '.']) {
+                let label = if first
+                    .starts_with(['$', '@', '{', '(', '[', '#', '\'', '"', '<', '&', '.'])
+                {
                     self.l.script.to_string()
                 } else if first == "git" {
                     key
@@ -1264,7 +1877,14 @@ impl<'a> Brief<'a> {
             let g = match groups.iter_mut().position(|g| g.key == key) {
                 Some(p) => &mut groups[p],
                 None => {
-                    groups.push(Group { key, runs: 0, failed: 0, last: Status::Pending, outcome: None, order: i });
+                    groups.push(Group {
+                        key,
+                        runs: 0,
+                        failed: 0,
+                        last: Status::Pending,
+                        outcome: None,
+                        order: i,
+                    });
                     groups.last_mut().unwrap()
                 }
             };
@@ -1277,7 +1897,10 @@ impl<'a> Brief<'a> {
                 .output
                 .as_deref()
                 .and_then(|o| outcome_line(o, x.status == Status::Ok))
-                .or_else(|| (x.status == Status::Error && !x.error.is_empty()).then(|| truncate_words(&strip_ansi(&x.error), 120)));
+                .or_else(|| {
+                    (x.status == Status::Error && !x.error.is_empty())
+                        .then(|| truncate_words(&strip_ansi(&x.error), 120))
+                });
             if outcome.is_some() || x.status == Status::Ok {
                 g.outcome = outcome;
             }
@@ -1297,7 +1920,13 @@ impl<'a> Brief<'a> {
                 Status::Error => "error",
                 Status::Pending => "?",
             };
-            let mut line = format!("`{}` {} — {}: {}", g.key, (self.l.runs)(g.runs, g.failed), self.l.last, status);
+            let mut line = format!(
+                "`{}` {} — {}: {}",
+                g.key,
+                (self.l.runs)(g.runs, g.failed),
+                self.l.last,
+                status
+            );
             if let Some(o) = &g.outcome {
                 line.push_str(&format!(" ({o})"));
             }
@@ -1310,7 +1939,11 @@ impl<'a> Brief<'a> {
         let counted = |map: HashMap<String, usize>| {
             let mut o: Vec<(String, usize)> = map.into_iter().collect();
             o.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-            o.iter().take(8).map(|(n, c)| format!("{n} ×{c}")).collect::<Vec<_>>().join(", ")
+            o.iter()
+                .take(8)
+                .map(|(n, c)| format!("{n} ×{c}"))
+                .collect::<Vec<_>>()
+                .join(", ")
         };
         if !lookups.is_empty() {
             lines.push(format!("{}: {}", self.l.lookups, counted(lookups)));
@@ -1345,18 +1978,32 @@ impl<'a> Brief<'a> {
             }
             let sig = error_signature(x);
             let tgt = target(x);
-            match groups.iter_mut().find(|(g, _)| g.sig == sig && g.target == tgt) {
+            match groups
+                .iter_mut()
+                .find(|(g, _)| g.sig == sig && g.target == tgt)
+            {
                 Some((g, last)) => {
                     g.count += 1;
                     *last = i;
                 }
-                None => groups.push((ErrorGroup { sig, target: tgt, count: 1, turn: *t, fixed: false }, i)),
+                None => groups.push((
+                    ErrorGroup {
+                        sig,
+                        target: tgt,
+                        count: 1,
+                        turn: *t,
+                        fixed: false,
+                    },
+                    i,
+                )),
             }
         }
         groups
             .into_iter()
             .map(|(mut g, last)| {
-                g.fixed = flat[last + 1..].iter().any(|(_, x)| x.status == Status::Ok && target(x) == g.target);
+                g.fixed = flat[last + 1..]
+                    .iter()
+                    .any(|(_, x)| x.status == Status::Ok && target(x) == g.target);
                 g
             })
             .collect()
@@ -1369,10 +2016,26 @@ impl<'a> Brief<'a> {
         let mut lines = Vec::new();
         let mut used = 0;
         for e in &errs {
-            let mark = if e.fixed { format!("✓ {}", self.l.fixed) } else { format!("✗ {}", self.l.unfixed) };
-            let sig = if e.sig.is_empty() { "error".to_string() } else { e.sig.clone() };
-            let times = if e.count > 1 { format!(" ×{}", e.count) } else { String::new() };
-            let line = format!("{mark}: {sig}{times} — `{}` ({})", truncate_words(&e.target, 60), e.turn + 1);
+            let mark = if e.fixed {
+                format!("✓ {}", self.l.fixed)
+            } else {
+                format!("✗ {}", self.l.unfixed)
+            };
+            let sig = if e.sig.is_empty() {
+                "error".to_string()
+            } else {
+                e.sig.clone()
+            };
+            let times = if e.count > 1 {
+                format!(" ×{}", e.count)
+            } else {
+                String::new()
+            };
+            let line = format!(
+                "{mark}: {sig}{times} — `{}` ({})",
+                truncate_words(&e.target, 60),
+                e.turn + 1
+            );
             if e.fixed && lines.len() >= 6 {
                 break;
             }
@@ -1387,7 +2050,10 @@ impl<'a> Brief<'a> {
 
     /// The list line: request → result · counts.
     fn headline(&self) -> Option<String> {
-        let first = self.turns.iter().find(|t| !t.slash && !t.request.is_empty())?;
+        let first = self
+            .turns
+            .iter()
+            .find(|t| !t.slash && !t.request.is_empty())?;
         let mut line = first_sentence(&first.request, 90);
         // The last turns that said something; a reply cut off mid-work
         // ("Now let me read…", "Waiting for…", a usage-limit notice) does not.
@@ -1407,7 +2073,11 @@ impl<'a> Brief<'a> {
             .find_map(|(t, turn)| {
                 let replies = turn.replies.len().max(1) as f64;
                 let weight = |s: &Sentence| {
-                    let cue = if has_cue(&s.text.to_lowercase(), RESULT) { 0.3 } else { 0.0 };
+                    let cue = if has_cue(&s.text.to_lowercase(), RESULT) {
+                        0.3
+                    } else {
+                        0.0
+                    };
                     s.score + cue + 0.1 * s.msg as f64 / replies
                 };
                 self.sentences
@@ -1459,7 +2129,12 @@ impl<'a> Brief<'a> {
     /// The last real request and the last reply of the session, verbatim
     /// within the room left. A trailing `/compact` is skipped for both.
     fn tail(&self, budget: usize) -> String {
-        let Some(last) = self.turns.iter().rev().find(|t| !t.slash && !t.request.is_empty()) else {
+        let Some(last) = self
+            .turns
+            .iter()
+            .rev()
+            .find(|t| !t.slash && !t.request.is_empty())
+        else {
             return String::new();
         };
         let reply = self
@@ -1471,11 +2146,19 @@ impl<'a> Brief<'a> {
         let req_budget = (budget / 3).max(300);
         let mut out = String::new();
         if !last.request.is_empty() {
-            out.push_str(&format!("**{}:**\n{}\n\n", self.l.user, demote_headings(&truncate_words(&last.request, req_budget))));
+            out.push_str(&format!(
+                "**{}:**\n{}\n\n",
+                self.l.user,
+                demote_headings(&truncate_words(&last.request, req_budget))
+            ));
         }
         if let Some(r) = reply {
             let room = budget.saturating_sub(out.len()).max(400);
-            out.push_str(&format!("**{}:**\n{}", self.l.agent, demote_headings(&truncate_words(r, room))));
+            out.push_str(&format!(
+                "**{}:**\n{}",
+                self.l.agent,
+                demote_headings(&truncate_words(r, room))
+            ));
         }
         out
     }
@@ -1484,7 +2167,11 @@ impl<'a> Brief<'a> {
 /// Forward slashes, no doubled separators, no surrounding quotes, and the
 /// `\\` that some stores keep escaped folded back.
 fn normalize_path(p: &str) -> String {
-    let p = p.trim().trim_matches('"').replace("\\\\", "\\").replace('\\', "/");
+    let p = p
+        .trim()
+        .trim_matches('"')
+        .replace("\\\\", "\\")
+        .replace('\\', "/");
     let mut out = String::with_capacity(p.len());
     for c in p.chars() {
         if c == '/' && out.ends_with('/') && out.len() > 1 {
@@ -1505,9 +2192,18 @@ fn is_plausible_path(p: &str) -> bool {
 }
 
 fn is_scratch_path(lower: &str) -> bool {
-    ["/tmp/", "/temp/", "scratchpad", "/.claude/", "/appdata/", "/.cache/", "/.gemini/", "/.codex/"]
-        .iter()
-        .any(|m| lower.contains(m))
+    [
+        "/tmp/",
+        "/temp/",
+        "scratchpad",
+        "/.claude/",
+        "/appdata/",
+        "/.cache/",
+        "/.gemini/",
+        "/.codex/",
+    ]
+    .iter()
+    .any(|m| lower.contains(m))
 }
 
 /// `## Heading` lines of quoted text as bold lines, so they do not read as
@@ -1580,8 +2276,15 @@ fn condense(text: &str, max: usize) -> String {
 
 fn first_sentence(text: &str, max: usize) -> String {
     let flat = one_line(&strip_code(text));
-    let first = split_sentences(&flat).into_iter().next().unwrap_or_default();
-    let first = if first.chars().count() < 25 { flat } else { first };
+    let first = split_sentences(&flat)
+        .into_iter()
+        .next()
+        .unwrap_or_default();
+    let first = if first.chars().count() < 25 {
+        flat
+    } else {
+        first
+    };
     truncate_words(&first, max)
 }
 
@@ -1591,7 +2294,10 @@ fn truncate_words(s: &str, max: usize) -> String {
         return s.to_string();
     }
     let cut: String = s.chars().take(max).collect();
-    let at = cut.rfind(char::is_whitespace).filter(|&i| i > max / 2).unwrap_or(cut.len());
+    let at = cut
+        .rfind(char::is_whitespace)
+        .filter(|&i| i > max / 2)
+        .unwrap_or(cut.len());
     format!("{}…", cut[..at].trim_end())
 }
 
@@ -1601,7 +2307,13 @@ mod tests {
     use crate::model::{Message, ToolSummary};
 
     fn msg(role: Role, text: &str) -> Message {
-        Message { role, text: text.into(), ts: None, tool: None, is_rewound: false }
+        Message {
+            role,
+            text: text.into(),
+            ts: None,
+            tool: None,
+            is_rewound: false,
+        }
     }
 
     fn tool(name: &str, arg_key: &str, arg: &str, ok: bool, output: &str) -> Message {
@@ -1613,7 +2325,13 @@ mod tests {
             lines: Some(output.lines().count()),
         };
         let text = crate::tool_summary::render_summary(&summary);
-        Message { role: Role::Tool, text, ts: None, tool: Some(ToolEvent::Summary(summary)), is_rewound: false }
+        Message {
+            role: Role::Tool,
+            text,
+            ts: None,
+            tool: Some(ToolEvent::Summary(summary)),
+            is_rewound: false,
+        }
     }
 
     fn session(messages: Vec<Message>) -> Session {
@@ -1653,7 +2371,10 @@ mod tests {
             msg(Role::Assistant, "Clippy still fails on an unused variable in src/bench.rs; that is left to do, nothing committed yet."),
         ];
         for i in 0..30 {
-            m.push(msg(Role::Assistant, &format!("Filler reasoning step {i} about nothing in particular here.")));
+            m.push(msg(
+                Role::Assistant,
+                &format!("Filler reasoning step {i} about nothing in particular here."),
+            ));
         }
         m.push(msg(Role::User, "Ok, summarize where we are."));
         m.push(msg(Role::Assistant, "The parser handles quotes and escapes; tests pass; clippy still fails in src/bench.rs and nothing is committed."));
@@ -1664,18 +2385,56 @@ mod tests {
     fn a_long_session_gets_sections_built_from_its_turns() {
         let out = smart_brief(&long_session(), 6000, false, false);
         assert!(out.starts_with("# Previous session: parser work"), "{out}");
-        assert!(out.contains("## Goal") && out.contains("Fix the CSV parser"), "{out}");
-        assert!(!out.contains("ignore me"), "harness wrappers are dropped: {out}");
-        assert!(out.contains("## How it went") && out.contains("1. Fix the CSV parser"), "{out}");
-        assert!(out.contains("root cause"), "decisions are key points: {out}");
-        assert!(out.contains("## User corrections") && out.contains("don't change the public API"), "{out}");
-        assert!(out.contains("`src/csv.rs` ×2"), "files counted, project prefix dropped: {out}");
-        assert!(out.contains("`cargo test` ×2, 1 failed — last: ok (test result: ok. 12 passed; 0 failed)"), "{out}");
-        assert!(out.contains("✓ fixed: error[E0308]: mismatched types at …"), "{out}");
-        assert!(out.contains("✗ not fixed"), "clippy's error stays open: {out}");
-        assert!(out.contains("## Still open") && out.contains("nothing committed"), "{out}");
-        assert!(out.contains("## Last exchange") && out.contains("summarize where we are"), "{out}");
-        assert!(!out.contains("Filler reasoning step 7"), "low-information filler is not quoted: {out}");
+        assert!(
+            out.contains("## Goal") && out.contains("Fix the CSV parser"),
+            "{out}"
+        );
+        assert!(
+            !out.contains("ignore me"),
+            "harness wrappers are dropped: {out}"
+        );
+        assert!(
+            out.contains("## How it went") && out.contains("1. Fix the CSV parser"),
+            "{out}"
+        );
+        assert!(
+            out.contains("root cause"),
+            "decisions are key points: {out}"
+        );
+        assert!(
+            out.contains("## User corrections") && out.contains("don't change the public API"),
+            "{out}"
+        );
+        assert!(
+            out.contains("`src/csv.rs` ×2"),
+            "files counted, project prefix dropped: {out}"
+        );
+        assert!(
+            out.contains(
+                "`cargo test` ×2, 1 failed — last: ok (test result: ok. 12 passed; 0 failed)"
+            ),
+            "{out}"
+        );
+        assert!(
+            out.contains("✓ fixed: error[E0308]: mismatched types at …"),
+            "{out}"
+        );
+        assert!(
+            out.contains("✗ not fixed"),
+            "clippy's error stays open: {out}"
+        );
+        assert!(
+            out.contains("## Still open") && out.contains("nothing committed"),
+            "{out}"
+        );
+        assert!(
+            out.contains("## Last exchange") && out.contains("summarize where we are"),
+            "{out}"
+        );
+        assert!(
+            !out.contains("Filler reasoning step 7"),
+            "low-information filler is not quoted: {out}"
+        );
         assert!(out.len() <= 6500, "within budget: {}", out.len());
     }
 
@@ -1684,11 +2443,26 @@ mod tests {
         let line = short_summary(&long_session()).unwrap();
         assert!(line.starts_with("Fix the CSV parser"), "{line}");
         assert!(line.contains(" → "), "{line}");
-        assert!(line.ends_with("4 turns · ✎2 · ⚠1"), "two files, clippy still failing: {line}");
+        assert!(
+            line.ends_with("4 turns · ✎2 · ⚠1"),
+            "two files, clippy still failing: {line}"
+        );
         assert!(!line.contains('\n'));
-        let ru = session(vec![msg(Role::User, "Почини сборку"), msg(Role::Assistant, "Исправил импорт, сборка проходит.")]);
-        assert_eq!(short_summary(&ru).unwrap(), "Почини сборку → Исправил импорт, сборка проходит. · 1 ход");
-        assert_eq!(short_summary(&session(vec![msg(Role::Assistant, "hello there, nothing asked")])), None);
+        let ru = session(vec![
+            msg(Role::User, "Почини сборку"),
+            msg(Role::Assistant, "Исправил импорт, сборка проходит."),
+        ]);
+        assert_eq!(
+            short_summary(&ru).unwrap(),
+            "Почини сборку → Исправил импорт, сборка проходит. · 1 ход"
+        );
+        assert_eq!(
+            short_summary(&session(vec![msg(
+                Role::Assistant,
+                "hello there, nothing asked"
+            )])),
+            None
+        );
         let cut = session(vec![
             msg(Role::User, "The handoff plugin sent a message: Прочитай C:/tmp/handoff.md и продолжай работу над D:/game/src/main.rs"),
             msg(Role::Assistant, "Перенёс сохранения в новый формат, тесты проходят."),
@@ -1697,29 +2471,58 @@ mod tests {
             msg(Role::Assistant, "You've hit your session limit · resets 10:40pm"),
         ]);
         let line = short_summary(&cut).unwrap();
-        assert!(line.starts_with("Прочитай C:/tmp/handoff.md"), "relay prefix dropped: {line}");
-        assert!(line.contains("→ Перенёс сохранения в новый формат"), "a cut-off reply is not the outcome: {line}");
-        assert!(line.ends_with("· 2 хода"), "Russian count despite Latin paths: {line}");
+        assert!(
+            line.starts_with("Прочитай C:/tmp/handoff.md"),
+            "relay prefix dropped: {line}"
+        );
+        assert!(
+            line.contains("→ Перенёс сохранения в новый формат"),
+            "a cut-off reply is not the outcome: {line}"
+        );
+        assert!(
+            line.ends_with("· 2 хода"),
+            "Russian count despite Latin paths: {line}"
+        );
     }
 
     #[test]
     fn a_russian_session_gets_russian_headings() {
         let s = session(vec![
-            msg(Role::User, "Исправь парсер CSV, поля в кавычках разбиваются."),
-            msg(Role::Assistant, "Причина в том, что split не учитывает кавычки, поэтому решил написать автомат."),
+            msg(
+                Role::User,
+                "Исправь парсер CSV, поля в кавычках разбиваются.",
+            ),
+            msg(
+                Role::Assistant,
+                "Причина в том, что split не учитывает кавычки, поэтому решил написать автомат.",
+            ),
             msg(Role::User, "Добавь тест на экранированные кавычки."),
             msg(Role::Assistant, "Добавил тест, все тесты проходят."),
             msg(Role::User, "Что осталось?"),
-            msg(Role::Assistant, "Осталось поправить предупреждение clippy в bench.rs, изменения не закоммичены."),
+            msg(
+                Role::Assistant,
+                "Осталось поправить предупреждение clippy в bench.rs, изменения не закоммичены.",
+            ),
         ]);
         let out = smart_brief(&s, 4000, false, false);
-        assert!(out.contains("# Прошлая сессия") && out.contains("## Задача") && out.contains("## Ход работы"), "{out}");
-        assert!(out.contains("## Что осталось") && out.contains("clippy"), "{out}");
+        assert!(
+            out.contains("# Прошлая сессия")
+                && out.contains("## Задача")
+                && out.contains("## Ход работы"),
+            "{out}"
+        );
+        assert!(
+            out.contains("## Что осталось") && out.contains("clippy"),
+            "{out}"
+        );
     }
 
     #[test]
     fn a_tiny_session_is_its_transcript() {
-        let s = session(vec![msg(Role::User, "hi there"), msg(Role::Assistant, "hello, what do you need?")]);
+        let s = session(vec![
+            msg(Role::User, "hi there"),
+            msg(Role::Assistant, "hello, what do you need?"),
+        ]);
         let out = smart_brief(&s, 4000, false, false);
         assert!(out.contains("**User:**\nhi there"), "{out}");
     }
@@ -1730,32 +2533,57 @@ mod tests {
         let secret = concat!("s", "k-abcdefghijklmnopqrstuvwxyz0123456789ABCD");
         let mut s = long_session();
         s.messages[0].text = format!("Fix the parser, the key is {secret} for the API.");
-        s.messages.push(msg(Role::Assistant, &format!("{} {secret}", "x".repeat(5000))));
+        s.messages.push(msg(
+            Role::Assistant,
+            &format!("{} {secret}", "x".repeat(5000)),
+        ));
         let out = smart_brief(&s, 3000, true, true);
         assert!(!out.contains(secret), "{out}");
     }
 
     #[test]
     fn commands_collapse_to_what_they_run() {
-        assert_eq!(command_key("cd /d/x && cargo test --release 2>&1 | tail"), "cargo test");
-        assert_eq!(command_key("S=/tmp; RUST_LOG=1 npm run build"), "npm run build");
-        assert_eq!(command_key("python -I scripts/probe.py a b"), "python probe.py");
+        assert_eq!(
+            command_key("cd /d/x && cargo test --release 2>&1 | tail"),
+            "cargo test"
+        );
+        assert_eq!(
+            command_key("S=/tmp; RUST_LOG=1 npm run build"),
+            "npm run build"
+        );
+        assert_eq!(
+            command_key("python -I scripts/probe.py a b"),
+            "python probe.py"
+        );
         assert_eq!(command_key("D:/tools/x.exe sync --tool codex"), "x");
         assert_eq!(command_key("python -X utf8 - <<'EOF'"), "python (inline)");
         assert_eq!(command_key("python -m py_compile a.py"), "python a.py");
         assert_eq!(command_key("python -m pytest -q"), "python -m pytest");
-        assert_eq!(command_key("node scripts/v17_check.mjs';"), "node v17_check.mjs");
-        assert_eq!(command_key("S=/d/tmp/scratchpad; SESSIONWIKI_DATA=$S/dataC timeout 450 $S/sw.exe web"), "sw");
+        assert_eq!(
+            command_key("node scripts/v17_check.mjs';"),
+            "node v17_check.mjs"
+        );
+        assert_eq!(
+            command_key("S=/d/tmp/scratchpad; SESSIONWIKI_DATA=$S/dataC timeout 450 $S/sw.exe web"),
+            "sw"
+        );
         assert_eq!(command_key("RUST_LOG=debug cargo run"), "cargo run");
         assert!(is_check_command("python -m pytest") && is_check_command("node v17_check.mjs"));
         assert!(!is_check_command("git check-ignore") && !is_check_command("git sparse-checkout"));
-        assert!(is_lookup_command("grep") && is_lookup_command("Get-Content") && is_lookup_command("git status"));
+        assert!(
+            is_lookup_command("grep")
+                && is_lookup_command("Get-Content")
+                && is_lookup_command("git status")
+        );
     }
 
     #[test]
     fn paths_fold_and_scripts_are_not_files() {
         assert_eq!(normalize_path("\"d:\\\\crypto\""), "d:/crypto");
-        assert_eq!(normalize_path("D://Docker//compose.yaml"), "D:/Docker/compose.yaml");
+        assert_eq!(
+            normalize_path("D://Docker//compose.yaml"),
+            "D:/Docker/compose.yaml"
+        );
         assert!(is_plausible_path("D:\\tools\\notes.md"));
         assert!(!is_plausible_path("import re, sys\nROOT = r'd:/x'"));
     }
@@ -1766,7 +2594,9 @@ mod tests {
         assert!(is_correction("нет, верни как было"));
         assert!(is_correction("ты не ответил на мой вопрос: что с тестами?"));
         assert!(!is_correction("да запускай, больше никто пока не работает"));
-        assert!(!is_correction("Плюс станет 111 уроков с углублением вместо 108."));
+        assert!(!is_correction(
+            "Плюс станет 111 уроков с углублением вместо 108."
+        ));
         assert!(!is_correction("nothing else to add, notes look fine"));
         assert!(!is_correction("Тексты не изменятся, только их разместят."));
     }
@@ -1779,14 +2609,25 @@ mod tests {
 
     #[test]
     fn colour_codes_are_dropped() {
-        assert_eq!(strip_ansi("\u{1b}[31;1mParserError: \u{1b}[0mbad"), "ParserError: bad");
+        assert_eq!(
+            strip_ansi("\u{1b}[31;1mParserError: \u{1b}[0mbad"),
+            "ParserError: bad"
+        );
         assert_eq!(strip_ansi("[31;1msqlite3: [0m"), "sqlite3: ");
         assert_eq!(strip_ansi("a [b] c"), "a [b] c");
     }
 
     #[test]
     fn sentences_split_at_ends_but_keep_versions_and_paths() {
-        let s = split_sentences("Bumped to v1.0.1 in src/main.rs. Then ran the tests! All 12 pass.");
-        assert_eq!(s, vec!["Bumped to v1.0.1 in src/main.rs.", "Then ran the tests!", "All 12 pass."]);
+        let s =
+            split_sentences("Bumped to v1.0.1 in src/main.rs. Then ran the tests! All 12 pass.");
+        assert_eq!(
+            s,
+            vec![
+                "Bumped to v1.0.1 in src/main.rs.",
+                "Then ran the tests!",
+                "All 12 pass."
+            ]
+        );
     }
 }

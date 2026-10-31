@@ -47,7 +47,7 @@ bug','2026-06-10T10:00:00+00:00','2026-06-10T10:00:00+00:00',1,'main')",
 
 #[test]
 fn golden_handshake_search_and_stream_purity() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let dir = std::env::temp_dir().join("sessionwiki-test-mcp-e2e");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
@@ -109,7 +109,7 @@ fn golden_handshake_search_and_stream_purity() {
 
 #[test]
 fn test_mcp_remember_and_list_snippets() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let dir = std::env::temp_dir().join("sessionwiki-test-mcp-remember");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();

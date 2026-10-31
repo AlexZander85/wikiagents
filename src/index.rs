@@ -1303,7 +1303,13 @@ fn rehydrate_archive(conn: &Connection) -> Result<()> {
                     .as_deref()
                     .map(|text| crate::redact::redact(&crate::util::nfc(text)).into_owned());
                 // External-content FTS requires byte-identical message text.
-                ins_row.execute(params![a.session_id, message.role, text, full_text, message.is_rewound as i32])?;
+                ins_row.execute(params![
+                    a.session_id,
+                    message.role,
+                    text,
+                    full_text,
+                    message.is_rewound as i32
+                ])?;
                 ins_fts.execute(params![conn.last_insert_rowid(), text])?;
             }
         }
@@ -1410,7 +1416,13 @@ fn index_one(
             } else {
                 None
             };
-            ins_row.execute(params![session.id, m.role.label(), text, full_text, m.is_rewound as i32])?;
+            ins_row.execute(params![
+                session.id,
+                m.role.label(),
+                text,
+                full_text,
+                m.is_rewound as i32
+            ])?;
             ins_fts.execute(params![tx.last_insert_rowid(), text])?;
         }
         let mut ins_touched =
@@ -1445,12 +1457,7 @@ fn index_one(
             }
             let ts = m.ts.map(|t| t.timestamp());
             for (sha, msg) in commits {
-                ins_commit.execute(params![
-                    session.id,
-                    sha,
-                    msg,
-                    ts,
-                ])?;
+                ins_commit.execute(params![session.id, sha, msg, ts,])?;
             }
         }
     }
@@ -1574,7 +1581,11 @@ fn write_session(
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
     index_one(&tx, session, key, mtime, size, output_mode)?;
     if !session.subagent && stored_auto_summary_version(&tx)? <= AUTO_SUMMARY_VERSION {
-        store_auto_summary(&tx, &session.id, crate::brief::short_summary(session).as_deref())?;
+        store_auto_summary(
+            &tx,
+            &session.id,
+            crate::brief::short_summary(session).as_deref(),
+        )?;
     }
     tx.commit()?;
     Ok(())
@@ -1609,7 +1620,11 @@ const AUTO_SUMMARY_KEY: &str = "auto_summary_version";
 /// none is recorded).
 fn stored_auto_summary_version(conn: &Connection) -> Result<i64> {
     Ok(conn
-        .query_row("SELECT value FROM meta WHERE key = ?1", [AUTO_SUMMARY_KEY], |r| r.get::<_, String>(0))
+        .query_row(
+            "SELECT value FROM meta WHERE key = ?1",
+            [AUTO_SUMMARY_KEY],
+            |r| r.get::<_, String>(0),
+        )
         .optional()?
         .and_then(|v| v.parse().ok())
         .unwrap_or(0))
@@ -1660,7 +1675,9 @@ fn backfill_auto_summaries(conn: &mut Connection) -> Result<usize> {
         }
         let mut lines = Vec::with_capacity(rows.len());
         for row in &rows {
-            let line = session_from_index(conn, row).ok().and_then(|s| crate::brief::short_summary(&s));
+            let line = session_from_index(conn, row)
+                .ok()
+                .and_then(|s| crate::brief::short_summary(&s));
             // A session with nothing to say still gets a row, or it would be
             // picked again on every sync.
             lines.push((row.session_id.clone(), line.unwrap_or_default()));
@@ -2062,10 +2079,13 @@ pub struct StorageStatus {
 }
 
 pub fn storage_status(conn: &Connection, path: &std::path::Path) -> Result<StorageStatus> {
-    let pragma = |name: &str| -> Result<i64> { Ok(conn.pragma_query_value(None, name, |r| r.get(0))?) };
+    let pragma =
+        |name: &str| -> Result<i64> { Ok(conn.pragma_query_value(None, name, |r| r.get(0))?) };
     let meta = |key: &str| -> Result<Option<i64>> {
         Ok(conn
-            .query_row("SELECT value FROM meta WHERE key = ?1", [key], |r| r.get::<_, String>(0))
+            .query_row("SELECT value FROM meta WHERE key = ?1", [key], |r| {
+                r.get::<_, String>(0)
+            })
             .optional()?
             .and_then(|v| v.parse().ok()))
     };
@@ -2077,7 +2097,6 @@ pub fn storage_status(conn: &Connection, path: &std::path::Path) -> Result<Stora
         compacted_size: meta(COMPACT_SIZE_KEY)?.map(|v| v.max(0) as u64),
     })
 }
-
 
 /// Whether a full [`compact`] is worth running now, and why. Cheap: a few
 /// pragmas and two meta reads.
@@ -2270,7 +2289,9 @@ fn archive_session(conn: &Connection, path: &str, sid: &str) -> Result<()> {
     let mut s = conn
         .prepare("SELECT role, text, full_text, COALESCE(is_rewound, 0) FROM messages WHERE session_id = ?1 ORDER BY id")?;
     let rows: Vec<(String, String, Option<String>, i32)> = s
-        .query_map(params![sid], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?
+        .query_map(params![sid], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+        })?
         .collect::<rusqlite::Result<_>>()?;
     drop(s);
     let transcript: Vec<serde_json::Value> = rows
@@ -2438,6 +2459,19 @@ const SUMMARY_SQL: &str = "(SELECT s.summary FROM summaries s WHERE s.session_id
 const TAGS_SQL: &str =
     "(SELECT group_concat(t.tag, ',') FROM tags t WHERE t.session_id = f.session_id)";
 
+/// Session-level filters for a listing, shared by [`recent`] and
+/// [`recent_range`] so callers add one filter without touching every signature.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ListQuery<'a> {
+    pub tool: Option<&'a str>,
+    pub project: Option<&'a str>,
+    pub tag: Option<&'a str>,
+    pub since: Option<&'a str>,
+    pub until: Option<&'a str>,
+    /// Keep subagent sessions; listings hide them by default.
+    pub include_subagents: bool,
+}
+
 pub fn recent(
     conn: &Connection,
     limit: usize,
@@ -2449,12 +2483,13 @@ pub fn recent(
     recent_range(
         conn,
         limit,
-        tool,
-        project,
-        tag,
-        include_subagents,
-        None,
-        None,
+        &ListQuery {
+            tool,
+            project,
+            tag,
+            include_subagents,
+            ..Default::default()
+        },
         SessionSort::LastActive,
     )
 }
@@ -2557,14 +2592,17 @@ fn push_session_scope(
 pub fn recent_range(
     conn: &Connection,
     limit: usize,
-    tool: Option<&str>,
-    project: Option<&str>,
-    tag: Option<&str>,
-    include_subagents: bool,
-    since: Option<&str>,
-    until: Option<&str>,
+    query: &ListQuery<'_>,
     sort: SessionSort,
 ) -> Result<Vec<SessionRow>> {
+    let ListQuery {
+        tool,
+        project,
+        tag,
+        since,
+        until,
+        include_subagents,
+    } = *query;
     let mut sql = format!(
         "SELECT session_id, tool, path, project, title, started, msg_count, kind, {PREVIEW_SQL}, {SUMMARY_SQL}, {TAGS_SQL}, (archived_at IS NOT NULL), COALESCE(ended, started), parent_id
          FROM files f WHERE 1=1",
@@ -2599,24 +2637,25 @@ pub fn recent_range(
     let rows = stmt.query_map(
         rusqlite::params_from_iter(args.iter().map(|a| a.as_ref())),
         |r| {
-        Ok(SessionRow {
-            last_active: r.get(12)?,
-            session_id: r.get(0)?,
-            tool: r.get(1)?,
-            path: r.get(2)?,
-            project: r.get(3)?,
-            title: r.get(4)?,
-            started: r.get(5)?,
-            msg_count: r.get(6)?,
-            kind: r.get(7)?,
-            preview: r.get(8)?,
-            summary: r.get(9)?,
-            tags: r.get(10)?,
-            archived: r.get(11)?,
-            parent_id: r.get(13)?,
-            account: None,
-        })
-    })?;
+            Ok(SessionRow {
+                last_active: r.get(12)?,
+                session_id: r.get(0)?,
+                tool: r.get(1)?,
+                path: r.get(2)?,
+                project: r.get(3)?,
+                title: r.get(4)?,
+                started: r.get(5)?,
+                msg_count: r.get(6)?,
+                kind: r.get(7)?,
+                preview: r.get(8)?,
+                summary: r.get(9)?,
+                tags: r.get(10)?,
+                archived: r.get(11)?,
+                parent_id: r.get(13)?,
+                account: None,
+            })
+        },
+    )?;
     let mut out = rows.collect::<rusqlite::Result<Vec<_>>>()?;
     crate::account_link::annotate(out.iter_mut());
     Ok(out)
@@ -2922,7 +2961,7 @@ fn search_fts_terms(
         |r| {
             Ok(Hit {
                 row: SessionRow {
-                    last_active: r.get(12)?, 
+                    last_active: r.get(12)?,
                     session_id: r.get(0)?,
                     tool: r.get(1)?,
                     path: r.get(2)?,
@@ -3132,7 +3171,7 @@ fn search_like_terms(
             let text: String = r.get(9)?;
             Ok(Hit {
                 row: SessionRow {
-                    last_active: r.get(11)?, 
+                    last_active: r.get(11)?,
                     session_id: r.get(0)?,
                     tool: r.get(1)?,
                     path: r.get(2)?,
@@ -3261,7 +3300,8 @@ fn escape_like(s: &str) -> String {
 
 /// The SELECT column list every id-resolution query shares, in the order
 /// [`map_resolve_row`] reads.
-const RESOLVE_COLS: &str = "session_id, tool, path, project, title, started, msg_count, kind, parent_id";
+const RESOLVE_COLS: &str =
+    "session_id, tool, path, project, title, started, msg_count, kind, parent_id";
 
 /// Map a resolve-query row to a [`SessionRow`]. Callers must SELECT
 /// [`RESOLVE_COLS`] followed by `{SUMMARY_SQL}, {TAGS_SQL}, (archived_at IS NOT NULL)`.
@@ -3591,18 +3631,33 @@ pub struct Snippet {
     pub message_ts: Option<String>,
 }
 
-pub fn save_snippet(
-    conn: &Connection,
-    session_id: &str,
-    message_idx: usize,
-    title: &str,
-    lang: Option<&str>,
-    content: &str,
-    tags: Option<&str>,
-    tool: Option<&str>,
-    role: Option<&str>,
-    message_ts: Option<&str>,
-) -> Result<i64> {
+/// What a caller asks for when saving a snippet. `tool`, `role` and
+/// `message_ts` are inferred from the session when left empty.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct NewSnippet<'a> {
+    pub session_id: &'a str,
+    pub message_idx: usize,
+    pub title: &'a str,
+    pub lang: Option<&'a str>,
+    pub content: &'a str,
+    pub tags: Option<&'a str>,
+    pub tool: Option<&'a str>,
+    pub role: Option<&'a str>,
+    pub message_ts: Option<&'a str>,
+}
+
+pub fn save_snippet(conn: &Connection, snippet: &NewSnippet<'_>) -> Result<i64> {
+    let NewSnippet {
+        session_id,
+        message_idx,
+        title,
+        lang,
+        content,
+        tags,
+        tool,
+        role,
+        message_ts,
+    } = *snippet;
     ensure_snippets_table(conn)?;
     let now = chrono::Utc::now().to_rfc3339();
 
@@ -4127,11 +4182,8 @@ pub fn extract_commits_from_text(text: &str) -> Vec<(String, Option<String>)> {
         let mut cur = trimmed;
         while let Some(pos) = cur.find("/commit/") {
             let after = &cur[pos + 8..];
-            let hex_len = after
-                .bytes()
-                .take_while(|b| b.is_ascii_hexdigit())
-                .count();
-            if hex_len >= 7 && hex_len <= 40 {
+            let hex_len = after.bytes().take_while(|b| b.is_ascii_hexdigit()).count();
+            if (7..=40).contains(&hex_len) {
                 let candidate = &after[..hex_len];
                 if is_hex_sha(candidate) {
                     results.push((candidate.to_ascii_lowercase(), None));
@@ -4141,7 +4193,10 @@ pub fn extract_commits_from_text(text: &str) -> Vec<(String, Option<String>)> {
         }
 
         // Pattern 3: git log output: "commit <40-hex-sha>"
-        if let Some(rest) = trimmed.strip_prefix("commit ").or_else(|| trimmed.strip_prefix("Commit ")) {
+        if let Some(rest) = trimmed
+            .strip_prefix("commit ")
+            .or_else(|| trimmed.strip_prefix("Commit "))
+        {
             let candidate = rest.split_whitespace().next().unwrap_or("");
             if candidate.len() == 40 && is_hex_sha(candidate) {
                 results.push((candidate.to_ascii_lowercase(), None));
@@ -4184,11 +4239,11 @@ pub fn find_session_by_commit(conn: &Connection, sha: &str) -> Result<Option<Ses
     Ok(None)
 }
 
+/// One row of `session_commits`: sha, the commit subject, and its unix time.
+pub type SessionCommit = (String, Option<String>, Option<i64>);
+
 /// Retrieve all commits recorded for a session.
-pub fn get_session_commits(
-    conn: &Connection,
-    session_id: &str,
-) -> Result<Vec<(String, Option<String>, Option<i64>)>> {
+pub fn get_session_commits(conn: &Connection, session_id: &str) -> Result<Vec<SessionCommit>> {
     let mut stmt = conn.prepare_cached(
         "SELECT commit_sha, message, timestamp FROM session_commits WHERE session_id = ?1 ORDER BY rowid ASC",
     )?;
@@ -4819,13 +4874,24 @@ mod listing_tests {
     #[test]
     fn message_count_order_covers_sessions_beyond_the_limit_by_activity() {
         let c = conn();
-        session(&c, "old-big", "2026-01-01T00:00:00+00:00", "2026-01-01T01:00:00+00:00", 900);
-        session(&c, "new-small", "2026-10-01T00:00:00+00:00", "2026-10-01T01:00:00+00:00", 3);
-        let by_msgs =
-            recent_range(&c, 1, None, None, None, false, None, None, SessionSort::Messages).unwrap();
+        session(
+            &c,
+            "old-big",
+            "2026-01-01T00:00:00+00:00",
+            "2026-01-01T01:00:00+00:00",
+            900,
+        );
+        session(
+            &c,
+            "new-small",
+            "2026-10-01T00:00:00+00:00",
+            "2026-10-01T01:00:00+00:00",
+            3,
+        );
+        let by_msgs = recent_range(&c, 1, &ListQuery::default(), SessionSort::Messages).unwrap();
         assert_eq!(ids(&by_msgs), ["old-big"]);
         let by_activity =
-            recent_range(&c, 1, None, None, None, false, None, None, SessionSort::LastActive).unwrap();
+            recent_range(&c, 1, &ListQuery::default(), SessionSort::LastActive).unwrap();
         assert_eq!(ids(&by_activity), ["new-small"]);
     }
 
@@ -4833,20 +4899,37 @@ mod listing_tests {
     fn a_window_keeps_sessions_active_in_it_and_reads_browser_timestamps() {
         let c = conn();
         // Begun the day before, still going inside the window.
-        session(&c, "resumed", "2026-10-22T20:00:00+00:00", "2026-10-23T09:00:00.5+00:00", 5);
+        session(
+            &c,
+            "resumed",
+            "2026-10-22T20:00:00+00:00",
+            "2026-10-23T09:00:00.5+00:00",
+            5,
+        );
         // Started exactly when the window opens (stored without fraction).
-        session(&c, "edge", "2026-10-22T21:00:00+00:00", "2026-10-22T21:00:00+00:00", 5);
-        session(&c, "before", "2026-10-20T10:00:00+00:00", "2026-10-20T11:00:00+00:00", 5);
+        session(
+            &c,
+            "edge",
+            "2026-10-22T21:00:00+00:00",
+            "2026-10-22T21:00:00+00:00",
+            5,
+        );
+        session(
+            &c,
+            "before",
+            "2026-10-20T10:00:00+00:00",
+            "2026-10-20T11:00:00+00:00",
+            5,
+        );
         // A local (UTC+3) day 2026-10-23, as the browser sends it.
         let rows = recent_range(
             &c,
             50,
-            None,
-            None,
-            None,
-            false,
-            Some("2026-10-22T21:00:00.000Z"),
-            Some("2026-10-23T20:59:59.999Z"),
+            &ListQuery {
+                since: Some("2026-10-22T21:00:00.000Z"),
+                until: Some("2026-10-23T20:59:59.999Z"),
+                ..Default::default()
+            },
             SessionSort::LastActive,
         )
         .unwrap();
@@ -4856,8 +4939,20 @@ mod listing_tests {
     #[test]
     fn search_applies_date_and_tag_before_the_limit() {
         let c = conn();
-        session(&c, "recent", "2026-10-23T10:00:00+00:00", "2026-10-23T11:00:00+00:00", 1);
-        session(&c, "old", "2026-01-01T10:00:00+00:00", "2026-01-01T11:00:00+00:00", 1);
+        session(
+            &c,
+            "recent",
+            "2026-10-23T10:00:00+00:00",
+            "2026-10-23T11:00:00+00:00",
+            1,
+        );
+        session(
+            &c,
+            "old",
+            "2026-01-01T10:00:00+00:00",
+            "2026-01-01T11:00:00+00:00",
+            1,
+        );
         // The old session ranks first (two hits in one message).
         message(&c, "old", "user", "migration migration plan");
         message(&c, "recent", "user", "migration plan");
@@ -4874,15 +4969,38 @@ mod listing_tests {
             ..SearchScope::default()
         };
         let hits = search_scoped(&c, "migration", 10, None, None, scope).unwrap();
-        assert_eq!(hits.iter().map(|h| h.row.session_id.as_str()).collect::<Vec<_>>(), ["recent"]);
+        assert_eq!(
+            hits.iter()
+                .map(|h| h.row.session_id.as_str())
+                .collect::<Vec<_>>(),
+            ["recent"]
+        );
     }
 
     #[test]
     fn multi_term_search_honours_roles_and_ranks_by_matches() {
         let c = conn();
-        session(&c, "dense", "2026-01-01T10:00:00+00:00", "2026-01-01T11:00:00+00:00", 4);
-        session(&c, "sparse", "2026-10-01T10:00:00+00:00", "2026-10-01T11:00:00+00:00", 2);
-        session(&c, "toolonly", "2026-10-02T10:00:00+00:00", "2026-10-02T11:00:00+00:00", 2);
+        session(
+            &c,
+            "dense",
+            "2026-01-01T10:00:00+00:00",
+            "2026-01-01T11:00:00+00:00",
+            4,
+        );
+        session(
+            &c,
+            "sparse",
+            "2026-10-01T10:00:00+00:00",
+            "2026-10-01T11:00:00+00:00",
+            2,
+        );
+        session(
+            &c,
+            "toolonly",
+            "2026-10-02T10:00:00+00:00",
+            "2026-10-02T11:00:00+00:00",
+            2,
+        );
         for _ in 0..2 {
             message(&c, "dense", "user", "alpha topic");
             message(&c, "dense", "assistant", "beta topic");
@@ -4890,7 +5008,9 @@ mod listing_tests {
         message(&c, "sparse", "user", "alpha topic");
         message(&c, "sparse", "assistant", "beta topic");
         message(&c, "toolonly", "tool", "alpha beta");
-        let rows = search_sessions_multi_terms(&c, &["alpha", "beta"], 10, None, SearchScope::default()).unwrap();
+        let rows =
+            search_sessions_multi_terms(&c, &["alpha", "beta"], 10, None, SearchScope::default())
+                .unwrap();
         // Most matches first; equal counts fall back to the more recent session.
         assert_eq!(ids(&rows), ["dense", "toolonly", "sparse"]);
         let roles = [Role::User, Role::Assistant];
@@ -4913,7 +5033,12 @@ mod listing_tests {
             .unwrap();
         };
         let count = |c: &Connection, kind: &str| -> i64 {
-            c.query_row("SELECT count(*) FROM summaries WHERE kind = ?1", [kind], |r| r.get(0)).unwrap()
+            c.query_row(
+                "SELECT count(*) FROM summaries WHERE kind = ?1",
+                [kind],
+                |r| r.get(0),
+            )
+            .unwrap()
         };
         // First run: nothing recorded, the version is claimed.
         assert!(claim_auto_summaries(&mut c, 2).unwrap());
@@ -4922,7 +5047,10 @@ mod listing_tests {
         line(&c, "b", "model line", "llm");
         // An older binary leaves the newer lines alone and stays out.
         assert!(!claim_auto_summaries(&mut c, 1).unwrap());
-        assert_eq!((count(&c, "auto"), stored_auto_summary_version(&c).unwrap()), (1, 2));
+        assert_eq!(
+            (count(&c, "auto"), stored_auto_summary_version(&c).unwrap()),
+            (1, 2)
+        );
         // The same version again changes nothing.
         assert!(claim_auto_summaries(&mut c, 2).unwrap());
         assert_eq!(count(&c, "auto"), 1);
@@ -4938,17 +5066,33 @@ mod listing_tests {
         for sid in ["a", "b"] {
             session(&c, sid, "2026-10-01T10:00:00Z", "2026-10-01T11:00:00Z", 2);
             message(&c, sid, "user", "Fix the CSV parser please");
-            message(&c, sid, "assistant", "Fixed: quoted fields now parse and all tests pass.");
+            message(
+                &c,
+                sid,
+                "assistant",
+                "Fixed: quoted fields now parse and all tests pass.",
+            );
         }
         set_summary(&c, "b", "model-written synopsis").unwrap();
-        assert_eq!(backfill_auto_summaries(&mut c).unwrap(), 1, "only the session without one");
+        assert_eq!(
+            backfill_auto_summaries(&mut c).unwrap(),
+            1,
+            "only the session without one"
+        );
         let get = |sid: &str| -> (String, String) {
-            c.query_row("SELECT summary, kind FROM summaries WHERE session_id = ?1", [sid], |r| Ok((r.get(0)?, r.get(1)?)))
-                .unwrap()
+            c.query_row(
+                "SELECT summary, kind FROM summaries WHERE session_id = ?1",
+                [sid],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap()
         };
         let (line, kind) = get("a");
         assert_eq!(kind, "auto");
-        assert!(line.starts_with("Fix the CSV parser please → Fixed: quoted fields"), "{line}");
+        assert!(
+            line.starts_with("Fix the CSV parser please → Fixed: quoted fields"),
+            "{line}"
+        );
         assert_eq!(get("b"), ("model-written synopsis".into(), "llm".into()));
         // Reindexing rewrites an instant line, never a model one.
         store_auto_summary(&c, "a", Some("newer line")).unwrap();
@@ -4956,7 +5100,11 @@ mod listing_tests {
         assert_eq!(get("a").0, "newer line");
         assert_eq!(get("b").0, "model-written synopsis");
         // `summarize` still offers the session that only has an instant line.
-        let todo: Vec<String> = unsummarized(&c, 10, None).unwrap().into_iter().map(|r| r.session_id).collect();
+        let todo: Vec<String> = unsummarized(&c, 10, None)
+            .unwrap()
+            .into_iter()
+            .map(|r| r.session_id)
+            .collect();
         assert_eq!(todo, vec!["a".to_string()]);
     }
 }
@@ -4975,7 +5123,17 @@ mod snippet_tests {
             [],
         )
         .unwrap();
-        let id = save_snippet(&c, "sid1", 3, "t", None, "body", None, None, None, None).unwrap();
+        let id = save_snippet(
+            &c,
+            &NewSnippet {
+                session_id: "sid1",
+                message_idx: 3,
+                title: "t",
+                content: "body",
+                ..Default::default()
+            },
+        )
+        .unwrap();
         let (tool, ts): (Option<String>, Option<String>) = c
             .query_row(
                 "SELECT tool, message_ts FROM snippets WHERE id = ?1",
@@ -5164,7 +5322,6 @@ mod edits_tests {
         assert_eq!(hits[0].snippet, "s1-edit");
     }
 
-
     #[test]
     fn edits_for_session_reads_a_relative_path_against_the_session_folder() {
         let c = conn_with_edits();
@@ -5236,7 +5393,10 @@ mod edits_tests {
             parent_id: None,
             messages: vec![Message {
                 role: Role::User,
-                text: format!("my key is {} ok", concat!("s", "k-abcdef012345678901234567890123")),
+                text: format!(
+                    "my key is {} ok",
+                    concat!("s", "k-abcdef012345678901234567890123")
+                ),
                 ts: None,
                 tool: None,
                 is_rewound: false,
@@ -5245,7 +5405,10 @@ mod edits_tests {
             edits: vec![EditEvent {
                 path: "/p/a.rs".into(),
                 kind: EditKind::Write,
-                snippet: format!("const T = \"{}\";", concat!("gh", "p_016C7f9aBcDeFgHiJkLmNoPqRsTuVwXyZ012")),
+                snippet: format!(
+                    "const T = \"{}\";",
+                    concat!("gh", "p_016C7f9aBcDeFgHiJkLmNoPqRsTuVwXyZ012")
+                ),
                 ts: None,
             }],
         };
@@ -5258,10 +5421,16 @@ mod edits_tests {
                 r.get(0)
             })
             .unwrap();
-        assert!(!msg.contains(concat!("s", "k-abcdef")), "message secret redacted: {msg}");
+        assert!(
+            !msg.contains(concat!("s", "k-abcdef")),
+            "message secret redacted: {msg}"
+        );
         assert!(msg.contains("[redacted:openai]"), "{msg}");
         let snip = edits_for(&c, "a.rs", 10).unwrap()[0].snippet.clone();
-        assert!(!snip.contains(concat!("gh", "p_016C")), "edit secret redacted: {snip}");
+        assert!(
+            !snip.contains(concat!("gh", "p_016C")),
+            "edit secret redacted: {snip}"
+        );
         assert!(snip.contains("[redacted:github]"), "{snip}");
         // Title is durable (copied into archives) - must be redacted too.
         let title: String = c
@@ -5277,7 +5446,10 @@ mod edits_tests {
         set_summary(
             &c,
             "sx",
-            &format!("we set {} as the key", concat!("s", "k-abcdef012345678901234567890123")),
+            &format!(
+                "we set {} as the key",
+                concat!("s", "k-abcdef012345678901234567890123")
+            ),
         )
         .unwrap();
         let sum: String = c
@@ -5287,7 +5459,10 @@ mod edits_tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert!(!sum.contains(concat!("s", "k-abcdef")), "summary secret redacted: {sum}");
+        assert!(
+            !sum.contains(concat!("s", "k-abcdef")),
+            "summary secret redacted: {sum}"
+        );
     }
 
     #[test]
@@ -5390,11 +5565,17 @@ Random numbers: [4844312, 5221473] and [[PubMed 33843667]] should be ignored.
         let commits = extract_commits_from_text(text);
         assert_eq!(commits.len(), 4);
         assert_eq!(commits[0].0, "7f2a1b9");
-        assert_eq!(commits[0].1.as_deref(), Some("fix: resolve race condition in token refresh"));
+        assert_eq!(
+            commits[0].1.as_deref(),
+            Some("fix: resolve race condition in token refresh")
+        );
         assert_eq!(commits[1].0, "0623bd8");
         assert_eq!(commits[1].1, None);
         assert_eq!(commits[2].0, "ca54746");
-        assert_eq!(commits[2].1.as_deref(), Some("feat: implement oauth token exchange"));
+        assert_eq!(
+            commits[2].1.as_deref(),
+            Some("feat: implement oauth token exchange")
+        );
         assert_eq!(commits[3].0, "0feb3fdd929bcd6649e0e7c5a688cf7dd012ef21");
     }
 

@@ -269,7 +269,13 @@ impl OpenCode {
                                     }
                                 }
                                 "tool" => {
-                                    emit_tool_part_v2(item, ts, &mut messages, &mut touched, &mut edits);
+                                    emit_tool_part_v2(
+                                        item,
+                                        ts,
+                                        &mut messages,
+                                        &mut touched,
+                                        &mut edits,
+                                    );
                                 }
                                 _ => {}
                             }
@@ -733,9 +739,7 @@ fn emit_tool_part_v2(
     ));
 
     let state = part.get("state");
-    let status = state
-        .and_then(|v| v.get("status"))
-        .and_then(Value::as_str);
+    let status = state.and_then(|v| v.get("status")).and_then(Value::as_str);
 
     let mut output_text: Option<String> = None;
     if let Some(s) = state {
@@ -957,10 +961,16 @@ mod tests {
         // Identified OpenCode version: v2.1.1 (session_v2 & session_message schema)
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let fixture_db = root.join("tests/fixtures/opencode/opencode_v2_1_1.db");
-        assert!(fixture_db.exists(), "fixture db must exist: {:?}", fixture_db);
+        assert!(
+            fixture_db.exists(),
+            "fixture db must exist: {:?}",
+            fixture_db
+        );
 
         let key = make_key(&fixture_db, "ses_v2_sanitized_001");
-        let s = OpenCode.parse_key(&key).expect("parse sanitized v2 fixture");
+        let s = OpenCode
+            .parse_key(&key)
+            .expect("parse sanitized v2 fixture");
 
         assert_eq!(s.tool, "opencode");
         assert_eq!(s.project, "/home/developer/opencode-v2-demo");
@@ -1067,23 +1077,34 @@ mod tests {
         // Test discovery via OPENCODE_DB
         std::env::set_var("OPENCODE_DB", &db);
         let store = OpenCode.store().expect("store must be found");
-        assert!(!store.had_error, "clean store discovery must not have errors");
+        assert!(
+            !store.had_error,
+            "clean store discovery must not have errors"
+        );
         let session_ids: Vec<_> = store
             .keys
             .iter()
             .map(|(k, _)| k.split_once(super::KEY_SEP).unwrap().1)
             .collect();
-        assert_eq!(session_ids, ["ses_v2", "ses_v1"], "v2 and v1 sessions discovered, duplicate deduped");
+        assert_eq!(
+            session_ids,
+            ["ses_v2", "ses_v1"],
+            "v2 and v1 sessions discovered, duplicate deduped"
+        );
 
         // Parse v2 key
         let key_v2 = make_key(&db, "ses_v2");
-        let s2 = OpenCode.parse_key(&key_v2).expect("parse v2 from mixed store");
+        let s2 = OpenCode
+            .parse_key(&key_v2)
+            .expect("parse v2 from mixed store");
         assert_eq!(s2.title, "V2 Title");
         assert_eq!(s2.project, "/home/dev/v2");
 
         // Parse v1 key
         let key_v1 = make_key(&db, "ses_v1");
-        let s1 = OpenCode.parse_key(&key_v1).expect("parse v1 from mixed store");
+        let s1 = OpenCode
+            .parse_key(&key_v1)
+            .expect("parse v1 from mixed store");
         assert_eq!(s1.title, "V1 Title");
         assert_eq!(s1.project, "/home/dev/v1");
 
@@ -1175,7 +1196,10 @@ mod tests {
 
         std::env::set_var("OPENCODE_DB", &db);
         let store = OpenCode.store().expect("store discovered");
-        assert!(store.had_error, "store discovery must keep had_error = true on row failure");
+        assert!(
+            store.had_error,
+            "store discovery must keep had_error = true on row failure"
+        );
         std::env::remove_var("OPENCODE_DB");
     }
 }

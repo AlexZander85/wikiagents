@@ -1,4 +1,6 @@
-use crate::adapters::{clean_path, dedup_paths, ok_or_flag, title_from_messages, Adapter, Discovered};
+use crate::adapters::{
+    clean_path, dedup_paths, ok_or_flag, title_from_messages, Adapter, Discovered,
+};
 use crate::model::{EditEvent, EditKind, Message, Role, Session, ToolCall, ToolResult};
 use crate::util::short_id;
 use anyhow::{Context, Result};
@@ -62,9 +64,17 @@ impl Adapter for Kimi {
             if state_file.is_file() {
                 if let Ok(state_raw) = std::fs::read_to_string(&state_file) {
                     if let Ok(sval) = serde_json::from_str::<Value>(&state_raw) {
-                        state_cwd = sval.get("cwd").or_else(|| sval.get("work_dir")).and_then(Value::as_str).map(String::from);
+                        state_cwd = sval
+                            .get("cwd")
+                            .or_else(|| sval.get("work_dir"))
+                            .and_then(Value::as_str)
+                            .map(String::from);
                         state_title = sval.get("title").and_then(Value::as_str).map(String::from);
-                        state_id = sval.get("id").or_else(|| sval.get("session_id")).and_then(Value::as_str).map(String::from);
+                        state_id = sval
+                            .get("id")
+                            .or_else(|| sval.get("session_id"))
+                            .and_then(Value::as_str)
+                            .map(String::from);
                     }
                 }
             }
@@ -87,7 +97,11 @@ impl Adapter for Kimi {
                 continue;
             };
 
-            let time = v.get("timestamp").or_else(|| v.get("time")).or_else(|| v.get("created_at")).and_then(parse_datetime);
+            let time = v
+                .get("timestamp")
+                .or_else(|| v.get("time"))
+                .or_else(|| v.get("created_at"))
+                .and_then(parse_datetime);
             if time.is_some() {
                 ended = time;
                 if started.is_none() {
@@ -95,18 +109,30 @@ impl Adapter for Kimi {
                 }
             }
 
-            if let Some(p) = v.get("parent_id").or_else(|| v.get("parentSessionId")).and_then(Value::as_str) {
+            if let Some(p) = v
+                .get("parent_id")
+                .or_else(|| v.get("parentSessionId"))
+                .and_then(Value::as_str)
+            {
                 if !p.is_empty() {
                     parent_id = Some(p.to_string());
                     subagent = true;
                 }
             }
 
-            let role_str = v.get("role").or_else(|| v.get("type")).and_then(Value::as_str).unwrap_or("");
+            let role_str = v
+                .get("role")
+                .or_else(|| v.get("type"))
+                .and_then(Value::as_str)
+                .unwrap_or("");
 
             match role_str {
                 "user" | "user_message" => {
-                    let text = v.get("content").or_else(|| v.get("text")).and_then(extract_text).unwrap_or_default();
+                    let text = v
+                        .get("content")
+                        .or_else(|| v.get("text"))
+                        .and_then(extract_text)
+                        .unwrap_or_default();
                     if !text.is_empty() {
                         messages.push(Message {
                             role: Role::User,
@@ -118,7 +144,11 @@ impl Adapter for Kimi {
                     }
                 }
                 "assistant" | "assistant_message" => {
-                    let text = v.get("content").or_else(|| v.get("text")).and_then(extract_text).unwrap_or_default();
+                    let text = v
+                        .get("content")
+                        .or_else(|| v.get("text"))
+                        .and_then(extract_text)
+                        .unwrap_or_default();
                     if !text.is_empty() {
                         messages.push(Message {
                             role: Role::Assistant,
@@ -134,10 +164,16 @@ impl Adapter for Kimi {
                             let fn_obj = call.get("function").unwrap_or(call);
                             let name = fn_obj.get("name").and_then(Value::as_str).unwrap_or("tool");
                             let call_id = call.get("id").and_then(Value::as_str).map(String::from);
-                            let args = if let Some(arg_str) = fn_obj.get("arguments").and_then(Value::as_str) {
+                            let args = if let Some(arg_str) =
+                                fn_obj.get("arguments").and_then(Value::as_str)
+                            {
                                 serde_json::from_str::<Value>(arg_str).unwrap_or(Value::Null)
                             } else {
-                                fn_obj.get("arguments").or_else(|| fn_obj.get("args")).cloned().unwrap_or(Value::Null)
+                                fn_obj
+                                    .get("arguments")
+                                    .or_else(|| fn_obj.get("args"))
+                                    .cloned()
+                                    .unwrap_or(Value::Null)
                             };
 
                             extract_edits_from_tool(name, &args, time, &mut touched, &mut edits);
@@ -154,8 +190,16 @@ impl Adapter for Kimi {
                     }
                 }
                 "tool" | "tool_result" => {
-                    let call_id = v.get("tool_call_id").or_else(|| v.get("id")).and_then(Value::as_str).map(String::from);
-                    let text = v.get("content").or_else(|| v.get("output")).and_then(extract_text).unwrap_or_default();
+                    let call_id = v
+                        .get("tool_call_id")
+                        .or_else(|| v.get("id"))
+                        .and_then(Value::as_str)
+                        .map(String::from);
+                    let text = v
+                        .get("content")
+                        .or_else(|| v.get("output"))
+                        .and_then(extract_text)
+                        .unwrap_or_default();
                     let is_error = v.get("is_error").and_then(Value::as_bool).unwrap_or(false);
 
                     messages.push(Message::tool_result(
@@ -172,7 +216,9 @@ impl Adapter for Kimi {
         }
 
         let computed_title = title_from_messages(&messages);
-        let final_title = state_title.filter(|t| !t.trim().is_empty()).unwrap_or(computed_title);
+        let final_title = state_title
+            .filter(|t| !t.trim().is_empty())
+            .unwrap_or(computed_title);
         let sid = state_id.unwrap_or_else(|| short_id(&path.to_string_lossy()));
 
         Ok(Session {
@@ -200,7 +246,9 @@ fn parse_datetime(v: &Value) -> Option<DateTime<Utc>> {
             DateTime::from_timestamp(ts_num, 0)
         }
     } else if let Some(s) = v.as_str() {
-        DateTime::parse_from_rfc3339(s).ok().map(|t| t.with_timezone(&Utc))
+        DateTime::parse_from_rfc3339(s)
+            .ok()
+            .map(|t| t.with_timezone(&Utc))
     } else {
         None
     }
@@ -211,15 +259,18 @@ fn extract_text(v: &Value) -> Option<String> {
         return Some(s.to_string());
     }
     if let Some(arr) = v.as_array() {
-        let parts: Vec<String> = arr.iter().filter_map(|p| {
-            if let Some(s) = p.as_str() {
-                Some(s.to_string())
-            } else if let Some(text) = p.get("text").and_then(Value::as_str) {
-                Some(text.to_string())
-            } else {
-                None
-            }
-        }).collect();
+        let parts: Vec<String> = arr
+            .iter()
+            .filter_map(|p| {
+                if let Some(s) = p.as_str() {
+                    Some(s.to_string())
+                } else {
+                    p.get("text")
+                        .and_then(Value::as_str)
+                        .map(|text| text.to_string())
+                }
+            })
+            .collect();
         if !parts.is_empty() {
             return Some(parts.join("\n"));
         }
@@ -234,27 +285,29 @@ fn extract_edits_from_tool(
     touched: &mut Vec<String>,
     edits: &mut Vec<EditEvent>,
 ) {
-    let path_val = args.get("file_path")
+    let path_val = args
+        .get("file_path")
         .or_else(|| args.get("path"))
         .or_else(|| args.get("target_file"))
         .and_then(Value::as_str);
 
     let Some(raw_path) = path_val else { return };
-    let Some(cleaned) = clean_path(raw_path) else { return };
+    let Some(cleaned) = clean_path(raw_path) else {
+        return;
+    };
     touched.push(cleaned.clone());
 
     let (kind, snippet) = match name {
         "edit_file" | "Edit" => {
-            let snip = args.get("new_str")
+            let snip = args
+                .get("new_str")
                 .or_else(|| args.get("replacement"))
                 .and_then(Value::as_str)
                 .unwrap_or("");
             (EditKind::Edit, snip.to_string())
         }
         "write_file" | "Write" => {
-            let snip = args.get("content")
-                .and_then(Value::as_str)
-                .unwrap_or("");
+            let snip = args.get("content").and_then(Value::as_str).unwrap_or("");
             (EditKind::Write, snip.to_string())
         }
         _ => (EditKind::Write, String::new()),
@@ -280,7 +333,8 @@ mod tests {
         std::fs::write(
             session_dir.join("state.json"),
             r#"{"id":"kimi-001","cwd":"/work/kimi-proj","title":"Optimize tokenizer"}"#,
-        ).unwrap();
+        )
+        .unwrap();
 
         let wire_file = session_dir.join("wire.jsonl");
         let content = r#"{"role":"user","content":"Optimize the BPE tokenizer loop","timestamp":1700000000}

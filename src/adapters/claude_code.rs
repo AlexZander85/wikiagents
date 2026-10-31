@@ -295,7 +295,8 @@ impl Adapter for ClaudeCode {
                 None
             }
         });
-        let subagent = parent_id.is_some() || path.components().any(|c| c.as_os_str() == "subagents");
+        let subagent =
+            parent_id.is_some() || path.components().any(|c| c.as_os_str() == "subagents");
 
         Ok(Session {
             id: short_id(&path.to_string_lossy()),

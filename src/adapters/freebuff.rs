@@ -47,7 +47,9 @@ fn ms_to_datetime(ms: i64) -> Option<DateTime<Utc>> {
 
 fn base_dirs() -> Vec<PathBuf> {
     let mut dirs = Vec::new();
-    if let Some(dir) = std::env::var_os("FREEBUFF_CONFIG_DIR").or_else(|| std::env::var_os("FREEBUFF_HOME")) {
+    if let Some(dir) =
+        std::env::var_os("FREEBUFF_CONFIG_DIR").or_else(|| std::env::var_os("FREEBUFF_HOME"))
+    {
         dirs.push(PathBuf::from(dir));
     }
     if let Some(home) = crate::util::home_dir() {
@@ -150,7 +152,7 @@ impl Adapter for Freebuff {
             let mut stmt = match conn.prepare(
                 "SELECT t.id, t.updated_at, t.created_at
                  FROM threads t
-                 WHERE EXISTS (SELECT 1 FROM messages m WHERE m.thread_id = t.id)"
+                 WHERE EXISTS (SELECT 1 FROM messages m WHERE m.thread_id = t.id)",
             ) {
                 Ok(s) => s,
                 Err(_) => {

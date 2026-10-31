@@ -35,7 +35,7 @@ fn seed(conn: &Connection, id: &str, path: &str, started: &str, ended: &str, pro
 
 #[test]
 fn sessions_touching_matches_abs_and_relative_and_parses_times() {
-    let _g = LOCK.lock().unwrap();
+    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let conn = fresh();
     // s_abs stores an absolute touched path (Claude Code); s_rel a relative one
     // (Codex). A repo-relative query must match both.
@@ -75,7 +75,7 @@ fn sessions_touching_matches_abs_and_relative_and_parses_times() {
 /// `newdata copy.py` - a pair that exists side by side on a real machine.
 #[test]
 fn sessions_touching_treats_like_metacharacters_literally() {
-    let _g = LOCK.lock().unwrap();
+    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let conn = fresh();
     let (s, e) = ("2026-06-08T10:00:00+00:00", "2026-06-08T11:00:00+00:00");
     seed(&conn, "s_under", "/p/KBS/newdata_copy.py", s, e, "/p");

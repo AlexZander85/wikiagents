@@ -11,6 +11,15 @@ pub struct Hermes;
 
 const KEY_SEP: char = '\u{1f}';
 
+/// The session header row: title, cwd, start and end stamps, parent id.
+type SessionMeta = (
+    Option<String>,
+    Option<String>,
+    Option<i64>,
+    Option<i64>,
+    Option<String>,
+);
+
 fn open_ro(path: &Path) -> Result<Connection> {
     Connection::open_with_flags(
         path,
@@ -134,13 +143,7 @@ impl Adapter for Hermes {
         let (db, sid) = key.split_once(KEY_SEP).context("malformed hermes key")?;
         let conn = open_ro(Path::new(db))?;
 
-        let (title, cwd, started_ts, ended_ts, parent_id): (
-            Option<String>,
-            Option<String>,
-            Option<i64>,
-            Option<i64>,
-            Option<String>,
-        ) = conn.query_row(
+        let (title, cwd, started_ts, ended_ts, parent_id): SessionMeta = conn.query_row(
             "SELECT title, cwd, started_at, ended_at, parent_session_id FROM sessions WHERE id = ?1",
             params![sid],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
@@ -150,9 +153,7 @@ impl Adapter for Hermes {
         let ended = ended_ts.and_then(ms_or_s_to_datetime).or(started);
         let subagent = parent_id.as_ref().is_some_and(|p| !p.trim().is_empty());
 
-        let has_active_col = conn
-            .prepare("SELECT active FROM messages LIMIT 0")
-            .is_ok();
+        let has_active_col = conn.prepare("SELECT active FROM messages LIMIT 0").is_ok();
         let query = if has_active_col {
             "SELECT role, content, tool_calls, timestamp, active FROM messages WHERE session_id = ?1 ORDER BY rowid ASC"
         } else {
@@ -202,7 +203,11 @@ impl Adapter for Hermes {
                             &call
                         };
                         let name = fn_obj.get("name").and_then(Value::as_str).unwrap_or("tool");
-                        let call_id = call.get("id").or_else(|| call.get("call_id")).and_then(Value::as_str).map(String::from);
+                        let call_id = call
+                            .get("id")
+                            .or_else(|| call.get("call_id"))
+                            .and_then(Value::as_str)
+                            .map(String::from);
                         let args = fn_obj.get("arguments").cloned().unwrap_or(Value::Null);
 
                         extract_edits_from_tool(name, &args, time, &mut touched, &mut edits);
@@ -223,7 +228,9 @@ impl Adapter for Hermes {
         }
 
         let computed_title = title_from_messages(&messages);
-        let final_title = title.filter(|t| !t.trim().is_empty()).unwrap_or(computed_title);
+        let final_title = title
+            .filter(|t| !t.trim().is_empty())
+            .unwrap_or(computed_title);
 
         Ok(Session {
             id: short_id(key),
@@ -257,27 +264,29 @@ fn extract_edits_from_tool(
     touched: &mut Vec<String>,
     edits: &mut Vec<EditEvent>,
 ) {
-    let path_val = args.get("file_path")
+    let path_val = args
+        .get("file_path")
         .or_else(|| args.get("path"))
         .or_else(|| args.get("target_file"))
         .and_then(Value::as_str);
 
     let Some(raw_path) = path_val else { return };
-    let Some(cleaned) = clean_path(raw_path) else { return };
+    let Some(cleaned) = clean_path(raw_path) else {
+        return;
+    };
     touched.push(cleaned.clone());
 
     let (kind, snippet) = match name {
         "edit_file" | "Edit" => {
-            let snip = args.get("new_str")
+            let snip = args
+                .get("new_str")
                 .or_else(|| args.get("replacement"))
                 .and_then(Value::as_str)
                 .unwrap_or("");
             (EditKind::Edit, snip.to_string())
         }
         "write_file" | "Write" => {
-            let snip = args.get("content")
-                .and_then(Value::as_str)
-                .unwrap_or("");
+            let snip = args.get("content").and_then(Value::as_str).unwrap_or("");
             (EditKind::Write, snip.to_string())
         }
         _ => (EditKind::Write, String::new()),

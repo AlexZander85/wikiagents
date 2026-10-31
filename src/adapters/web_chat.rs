@@ -156,7 +156,10 @@ fn extract_code_block_paths(text: &str, touched: &mut Vec<String>) {
     for line in text.lines() {
         let trimmed = line.trim();
         if (trimmed.starts_with("```") || trimmed.starts_with("#")) && trimmed.len() > 3 {
-            let rest = trimmed.trim_start_matches('`').trim_start_matches('#').trim();
+            let rest = trimmed
+                .trim_start_matches('`')
+                .trim_start_matches('#')
+                .trim();
             if rest.contains('/') || rest.contains('\\') || rest.contains('.') {
                 let first_word = rest.split_whitespace().next().unwrap_or("");
                 let token = first_word.trim_matches(|c| c == ':' || c == '"' || c == '\'');
@@ -240,10 +243,14 @@ impl Adapter for ClaudeWeb {
     }
 
     fn parse_key(&self, key: &str) -> Result<Session> {
-        let (file_str, uuid) = key.split_once(KEY_SEP).context("malformed claude-web key")?;
+        let (file_str, uuid) = key
+            .split_once(KEY_SEP)
+            .context("malformed claude-web key")?;
         let path = Path::new(file_str);
         let json = self.cache.get_or_load(path)?;
-        let arr = json.as_array().context("claude web export is not an array")?;
+        let arr = json
+            .as_array()
+            .context("claude web export is not an array")?;
         let item = arr
             .iter()
             .find(|item| item.get("uuid").and_then(Value::as_str) == Some(uuid))
@@ -287,7 +294,12 @@ fn parse_claude_item(path: &Path, uuid: &str, item: &Value) -> Result<Session> {
                 .and_then(Value::as_str)
                 .and_then(parse_rfc3339_utc);
 
-            let mut text = msg.get("text").and_then(Value::as_str).unwrap_or("").trim().to_string();
+            let mut text = msg
+                .get("text")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .trim()
+                .to_string();
             if text.is_empty() {
                 if let Some(content) = msg.get("content").and_then(Value::as_array) {
                     let mut parts = Vec::new();
@@ -445,7 +457,7 @@ fn parse_deepseek_item(path: &Path, id: &str, item: &Value) -> Result<Session> {
         let mut root_id = None;
         for (nid, node) in mapping {
             let parent = node.get("parent");
-            if parent.is_none() || parent.and_then(Value::as_str) == None || nid == "root" {
+            if parent.is_none() || parent.and_then(Value::as_str).is_none() || nid == "root" {
                 root_id = Some(nid.clone());
                 if nid == "root" {
                     break;
@@ -812,7 +824,12 @@ fn parse_qwen_item(path: &Path, id: &str, item: &Value) -> Result<Session> {
             };
             let ts = m.get("timestamp").and_then(parse_epoch_secs_or_ms);
 
-            let mut text = m.get("content").and_then(Value::as_str).unwrap_or("").trim().to_string();
+            let mut text = m
+                .get("content")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .trim()
+                .to_string();
             if text.is_empty() {
                 if let Some(list) = m.get("content_list").and_then(Value::as_array) {
                     let mut parts = Vec::new();
@@ -990,7 +1007,11 @@ fn parse_glm_item(path: &Path, id: &str, item: &Value) -> Result<Session> {
                     Role::Assistant
                 };
                 let ts = m.get("timestamp").and_then(parse_epoch_secs_or_ms);
-                let text = m.get("content").and_then(Value::as_str).unwrap_or("").trim();
+                let text = m
+                    .get("content")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .trim();
                 if !text.is_empty() {
                     extract_code_block_paths(text, &mut touched);
                     messages.push(Message::plain(role, text, ts));
@@ -1047,7 +1068,8 @@ mod tests {
     #[test]
     fn test_gemini_web_parsing() {
         let gemini = GeminiWeb::default();
-        let sample_path = Path::new(r"D:\wikiagents\web_session\gemini_conversations_ALL_34_chats.json");
+        let sample_path =
+            Path::new(r"D:\wikiagents\web_session\gemini_conversations_ALL_34_chats.json");
         if sample_path.is_file() {
             let session = gemini.parse(sample_path).expect("parse gemini");
             assert_eq!(session.tool, "gemini-web");
@@ -1057,7 +1079,8 @@ mod tests {
     #[test]
     fn test_qwen_web_parsing() {
         let qwen = QwenWeb::default();
-        let sample_path = Path::new(r"D:\wikiagents\web_session\qwen_chat-export-1793387130342.json");
+        let sample_path =
+            Path::new(r"D:\wikiagents\web_session\qwen_chat-export-1793387130342.json");
         if sample_path.is_file() {
             let session = qwen.parse(sample_path).expect("parse qwen");
             assert_eq!(session.tool, "qwen-web");
@@ -1068,7 +1091,8 @@ mod tests {
     #[test]
     fn test_glm_web_parsing() {
         let glm = GlmWeb::default();
-        let sample_path = Path::new(r"D:\wikiagents\web_session\archived-chat-export-1793387426982_glm.json");
+        let sample_path =
+            Path::new(r"D:\wikiagents\web_session\archived-chat-export-1793387426982_glm.json");
         if sample_path.is_file() {
             let session = glm.parse(sample_path).expect("parse glm");
             assert_eq!(session.tool, "glm-web");

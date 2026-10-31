@@ -239,13 +239,14 @@ fn window_lines(head: &[u8], tail: &[u8]) -> Vec<String> {
 pub fn for_each_line(path: &Path, mut f: impl FnMut(&str)) -> Result<()> {
     use std::io::{BufRead, BufReader};
     let file = std::fs::File::open(path).with_context(|| format!("open {}", path.display()))?;
-    let mut reader: Box<dyn BufRead> = if path.extension().is_some_and(|x| x == "zst" || x == "zstd") {
-        let decoder = ruzstd::decoding::StreamingDecoder::new(BufReader::new(file))
-            .map_err(|e| anyhow::anyhow!("decompress {}: {e}", path.display()))?;
-        Box::new(BufReader::new(decoder))
-    } else {
-        Box::new(BufReader::new(file))
-    };
+    let mut reader: Box<dyn BufRead> =
+        if path.extension().is_some_and(|x| x == "zst" || x == "zstd") {
+            let decoder = ruzstd::decoding::StreamingDecoder::new(BufReader::new(file))
+                .map_err(|e| anyhow::anyhow!("decompress {}: {e}", path.display()))?;
+            Box::new(BufReader::new(decoder))
+        } else {
+            Box::new(BufReader::new(file))
+        };
     let mut line = Vec::new();
     loop {
         line.clear();
@@ -418,7 +419,11 @@ fn on_disk_case(path: &str) -> Option<String> {
         }
     }
     let respelled = if path.starts_with(r"\\?\") {
-        let prefix_len = if let Some(pos) = path.find('/') { pos } else { path.len() };
+        let prefix_len = if let Some(pos) = path.find('/') {
+            pos
+        } else {
+            path.len()
+        };
         let (win_prefix, _) = path.split_at(prefix_len);
         let respelled_str = out.to_string_lossy();
         if let Some(respelled_rest) = respelled_str.get(prefix_len..) {
@@ -717,7 +722,6 @@ mod cap_tests {
     }
 }
 
-
 /// Query available disk space in bytes on the filesystem of `path`.
 #[cfg(windows)]
 pub fn available_space(path: &Path) -> Result<u64> {
@@ -729,7 +733,11 @@ pub fn available_space(path: &Path) -> Result<u64> {
             .map(Path::to_path_buf)
             .unwrap_or_else(|| std::path::PathBuf::from("."))
     };
-    let wide: Vec<u16> = dir.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
+    let wide: Vec<u16> = dir
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
     let mut free_bytes: u64 = 0;
     extern "system" {
         fn GetDiskFreeSpaceExW(
@@ -767,8 +775,7 @@ pub fn available_space(path: &Path) -> Result<u64> {
             .map(Path::to_path_buf)
             .unwrap_or_else(|| std::path::PathBuf::from("."))
     };
-    let c_path = CString::new(dir.as_os_str().as_bytes())
-        .context("invalid path for statvfs")?;
+    let c_path = CString::new(dir.as_os_str().as_bytes()).context("invalid path for statvfs")?;
     let mut stat = std::mem::MaybeUninit::<libc::statvfs>::uninit();
     let res = unsafe { libc::statvfs(c_path.as_ptr(), stat.as_mut_ptr()) };
     if res != 0 {
@@ -779,7 +786,11 @@ pub fn available_space(path: &Path) -> Result<u64> {
     }
     let stat = unsafe { stat.assume_init() };
     #[allow(clippy::unnecessary_cast)]
-    let bsize = if stat.f_frsize > 0 { stat.f_frsize as u64 } else { stat.f_bsize as u64 };
+    let bsize = if stat.f_frsize > 0 {
+        stat.f_frsize as u64
+    } else {
+        stat.f_bsize as u64
+    };
     #[allow(clippy::unnecessary_cast)]
     Ok(stat.f_bavail as u64 * bsize)
 }

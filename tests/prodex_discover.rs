@@ -10,7 +10,7 @@ static LOCK: Mutex<()> = Mutex::new(());
 
 #[test]
 fn discovers_tasks_across_registered_bridge_roots() {
-    let _g = LOCK.lock().unwrap();
+    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let dir = tempfile::tempdir().unwrap();
     // Two registered roots: one real (fixture copy), one deleted.
     let repo = dir.path().join("repo-a");
@@ -43,7 +43,7 @@ fn discovers_tasks_across_registered_bridge_roots() {
 
 #[test]
 fn no_registry_means_no_prodex() {
-    let _g = LOCK.lock().unwrap();
+    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let dir = tempfile::tempdir().unwrap();
     std::env::set_var(
         "SESSIONWIKI_PRODEX_REGISTRY",
@@ -58,7 +58,7 @@ fn no_registry_means_no_prodex() {
 
 #[test]
 fn malformed_or_structurally_invalid_registry_is_partial_discovery() {
-    let _g = LOCK.lock().unwrap();
+    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let dir = tempfile::tempdir().unwrap();
     let registry = dir.path().join("bridges.json");
     std::env::set_var("SESSIONWIKI_PRODEX_REGISTRY", &registry);
@@ -99,7 +99,7 @@ fn malformed_or_structurally_invalid_registry_is_partial_discovery() {
 
 #[test]
 fn invalid_registered_task_store_is_partial_discovery() {
-    let _g = LOCK.lock().unwrap();
+    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let dir = tempfile::tempdir().unwrap();
     let repo = dir.path().join("repo");
     std::fs::create_dir_all(repo.join(".bridge")).unwrap();
@@ -146,7 +146,7 @@ fn sync_prodex(data: &std::path::Path, registry: &std::path::Path) {
 
 #[test]
 fn corrupt_registry_does_not_archive_but_later_real_deletion_does() {
-    let _g = LOCK.lock().unwrap();
+    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let dir = tempfile::tempdir().unwrap();
     let data = dir.path().join("data");
     let repo = dir.path().join("repo");
@@ -184,7 +184,7 @@ fn corrupt_registry_does_not_archive_but_later_real_deletion_does() {
 
 #[test]
 fn disappearing_registry_is_absent_store_not_task_deletion() {
-    let _g = LOCK.lock().unwrap();
+    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let dir = tempfile::tempdir().unwrap();
     let data = dir.path().join("data");
     let repo = dir.path().join("repo");
@@ -250,7 +250,7 @@ fn repo_with_alias(dir: &std::path::Path) -> (std::path::PathBuf, std::path::Pat
 #[cfg(unix)]
 #[test]
 fn one_repo_registered_under_two_spellings_is_walked_once() {
-    let _g = LOCK.lock().unwrap();
+    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let dir = tempfile::tempdir().unwrap();
     let (repo, alias) = repo_with_alias(dir.path());
     let registry = dir.path().join("bridges.json");
@@ -268,7 +268,7 @@ fn one_repo_registered_under_two_spellings_is_walked_once() {
 #[cfg(unix)]
 #[test]
 fn second_spelling_already_indexed_is_dropped_and_show_resolves() {
-    let _g = LOCK.lock().unwrap();
+    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let dir = tempfile::tempdir().unwrap();
     let data = dir.path().join("data");
     let (repo, alias) = repo_with_alias(dir.path());

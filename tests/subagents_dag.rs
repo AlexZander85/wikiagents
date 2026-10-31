@@ -30,7 +30,7 @@ fn seed_session(conn: &rusqlite::Connection, id: &str, parent_id: Option<&str>, 
 
 #[test]
 fn test_subagent_dag_linking_and_queries() {
-    let _guard = LOCK.lock().unwrap();
+    let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let (conn, dir) = fresh_index();
 
     seed_session(&conn, "parent-session-1", None, false);
@@ -62,7 +62,10 @@ fn test_subagent_dag_linking_and_queries() {
     // 4. Resolve child returns parent_id
     let resolved_child = index::resolve(&conn, "child-sub-1").unwrap();
     assert_eq!(resolved_child.len(), 1);
-    assert_eq!(resolved_child[0].parent_id.as_deref(), Some("parent-session-1"));
+    assert_eq!(
+        resolved_child[0].parent_id.as_deref(),
+        Some("parent-session-1")
+    );
 
     // 5. Unrelated session has no subagents
     let no_children = index::subagents_for_parent(&conn, "other-main-2").unwrap();

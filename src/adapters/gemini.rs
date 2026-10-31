@@ -119,7 +119,8 @@ pub(crate) fn project_root(chat: &Path) -> Option<String> {
     let store = chats_dir(chat)?.parent()?;
     let root = crate::util::read_to_string_capped(&store.join(".project_root")).ok()?;
     let root = root.trim();
-    (Path::new(root).is_absolute() || root.starts_with('/') || root.starts_with('\\')).then(|| root.to_string())
+    (Path::new(root).is_absolute() || root.starts_with('/') || root.starts_with('\\'))
+        .then(|| root.to_string())
 }
 
 impl Adapter for Gemini {
@@ -167,7 +168,10 @@ impl Adapter for Gemini {
         let mut recorded_results = HashSet::new();
         if let Some(Value::Array(items)) = v.get("messages") {
             for m in items {
-                let is_rewound = m.get("is_rewound").and_then(Value::as_bool).unwrap_or(false);
+                let is_rewound = m
+                    .get("is_rewound")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
                 let start_len = messages.len();
                 let kind = m.get("type").and_then(Value::as_str);
                 let role = match kind {
@@ -515,7 +519,11 @@ mod tests {
             msgs.as_array()
                 .unwrap()
                 .iter()
-                .filter(|m| !m.get("is_rewound").and_then(Value::as_bool).unwrap_or(false))
+                .filter(|m| {
+                    !m.get("is_rewound")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false)
+                })
                 .map(|m| m["id"].as_str().unwrap().to_string())
                 .collect::<Vec<_>>()
         };
@@ -527,7 +535,9 @@ mod tests {
                 .map(|m| {
                     (
                         m["id"].as_str().unwrap().to_string(),
-                        m.get("is_rewound").and_then(Value::as_bool).unwrap_or(false),
+                        m.get("is_rewound")
+                            .and_then(Value::as_bool)
+                            .unwrap_or(false),
                     )
                 })
                 .collect::<Vec<_>>()

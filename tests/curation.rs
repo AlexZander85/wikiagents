@@ -85,7 +85,7 @@ fn nfd_hoesa() -> String {
 
 #[test]
 fn tags_round_trip_and_counts() {
-    let _g = LOCK.lock().unwrap();
+    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let conn = fresh_index();
     seed(
         &conn,
@@ -113,7 +113,7 @@ fn tags_round_trip_and_counts() {
 // ','), and an empty tag would emit [""]. Both are rejected at the boundary.
 #[test]
 fn add_tag_rejects_comma_and_empty() {
-    let _g = LOCK.lock().unwrap();
+    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let conn = fresh_index();
     seed(&conn, "t1", "codex", "/p", "x", "2026-06-10T10:00:00+00:00");
     assert!(
@@ -132,7 +132,7 @@ fn add_tag_rejects_comma_and_empty() {
 
 #[test]
 fn notes_round_trip() {
-    let _g = LOCK.lock().unwrap();
+    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let conn = fresh_index();
     seed(
         &conn,
@@ -157,7 +157,7 @@ fn notes_round_trip() {
 
 #[test]
 fn related_prefers_same_project_then_shared_tags() {
-    let _g = LOCK.lock().unwrap();
+    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let conn = fresh_index();
     seed(
         &conn,
@@ -215,7 +215,7 @@ fn related_prefers_same_project_then_shared_tags() {
 
 #[test]
 fn provenance_files_trace_and_shared_file_relatedness() {
-    let _g = LOCK.lock().unwrap();
+    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let conn = fresh_index();
     // Two sessions in different projects both edit the same file (e.g. a
     // shared lib); a third edits something else.
@@ -284,7 +284,7 @@ fn provenance_files_trace_and_shared_file_relatedness() {
 
 #[test]
 fn projects_and_stats_rollups() {
-    let _g = LOCK.lock().unwrap();
+    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let conn = fresh_index();
     seed(
         &conn,
@@ -330,7 +330,7 @@ fn projects_and_stats_rollups() {
 // fully - listable, traceable, searchable, readable.
 #[test]
 fn archive_survives_schema_bump_rehydration() {
-    let _g = LOCK.lock().unwrap();
+    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let conn = fresh_index();
     conn.execute(
         "INSERT INTO archive
@@ -388,7 +388,7 @@ fn archive_survives_schema_bump_rehydration() {
 // from the index, and `forget` finally removes it.
 #[test]
 fn archive_on_prune_serves_and_forgets() {
-    let _g = LOCK.lock().unwrap();
+    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let home = std::env::temp_dir().join("sessionwiki-test-arc-home");
     let _ = std::fs::remove_dir_all(&home);
     let proj = home.join(".claude/projects/myproj");
@@ -491,7 +491,7 @@ fn nfd_fixture_is_actually_decomposed() {
 // Padded to >=3 chars so this exercises the trigram FTS path specifically.
 #[test]
 fn nfd_message_is_found_by_nfc_query_via_fts() {
-    let _g = LOCK.lock().unwrap();
+    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let conn = fresh_index();
     let nfd_text = format!("{} 프로젝트", nfd_hoesa()); // "회사 프로젝트", 회사 is NFD
     let text = sessionwiki::util::nfc(&nfd_text);
@@ -528,7 +528,7 @@ fn nfd_message_is_found_by_nfc_query_via_fts() {
 
 #[test]
 fn nfd_touched_path_is_traceable_by_nfc() {
-    let _g = LOCK.lock().unwrap();
+    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let conn = fresh_index();
     seed(
         &conn,
@@ -565,7 +565,7 @@ fn nfd_touched_path_is_traceable_by_nfc() {
 // from search on the very upgrade that ships this fix.
 #[test]
 fn archived_nfd_transcript_searchable_after_rehydrate() {
-    let _g = LOCK.lock().unwrap();
+    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let conn = fresh_index();
     let transcript = serde_json::to_string(&vec![
         ("user".to_string(), "korean question".to_string()),
@@ -600,7 +600,7 @@ fn archived_nfd_transcript_searchable_after_rehydrate() {
 // search_like finds it. This is the headline bug the user eval flagged.
 #[test]
 fn short_korean_query_matches_via_like() {
-    let _g = LOCK.lock().unwrap();
+    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let conn = fresh_index();
     seed_msg(
         &conn,
@@ -637,7 +637,7 @@ fn short_korean_query_matches_via_like() {
 
 #[test]
 fn short_latin_query_matches_via_like() {
-    let _g = LOCK.lock().unwrap();
+    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let conn = fresh_index();
     seed_msg(
         &conn,
@@ -658,7 +658,7 @@ fn short_latin_query_matches_via_like() {
 
 #[test]
 fn short_query_escapes_like_wildcards() {
-    let _g = LOCK.lock().unwrap();
+    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let conn = fresh_index();
     // e1 contains the literal "9%x"; e2 contains "9zx". A query of "9%x" must
     // match only e1. If % were treated as a wildcard, "9%x" would also match
@@ -694,7 +694,7 @@ fn short_query_escapes_like_wildcards() {
 
 #[test]
 fn short_query_orders_by_recency() {
-    let _g = LOCK.lock().unwrap();
+    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let conn = fresh_index();
     seed_msg(
         &conn,
@@ -726,7 +726,7 @@ fn short_query_orders_by_recency() {
 
 #[test]
 fn long_query_still_uses_fts_unchanged() {
-    let _g = LOCK.lock().unwrap();
+    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let conn = fresh_index();
     conn.execute(
         "INSERT OR REPLACE INTO files
@@ -753,7 +753,7 @@ fn long_query_still_uses_fts_unchanged() {
 
 #[test]
 fn tags_are_nfc_normalized_on_add_filter_and_remove() {
-    let _g = LOCK.lock().unwrap();
+    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let conn = fresh_index();
     seed(
         &conn,
@@ -785,10 +785,9 @@ fn tags_are_nfc_normalized_on_add_filter_and_remove() {
     assert!(index::tag_counts(&conn).unwrap().is_empty());
 }
 
-
 #[test]
 fn favorites_lifecycle_and_table_ensure() {
-    let _g = LOCK.lock().unwrap();
+    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let conn = fresh_index();
     assert_eq!(index::list_favorites(&conn).unwrap().len(), 0);
     assert!(!index::is_favorite(&conn, "sess1").unwrap());
@@ -805,13 +804,12 @@ fn favorites_lifecycle_and_table_ensure() {
     assert_eq!(index::list_favorites(&conn).unwrap(), vec!["sess2"]);
 }
 
-
 /// Codex records a path relative to the folder it ran in, Claude Code a full
 /// one: `src/auth.rs` from `/proj/api` and `/proj/api/src/auth.rs` are one
 /// file, while `src/auth.rs` from `/proj/web` is another.
 #[test]
 fn shared_file_relatedness_reads_relative_paths_against_their_folder() {
-    let _g = LOCK.lock().unwrap();
+    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let conn = fresh_index();
     let t = "2026-06-10T10:00:00+00:00";
     seed(&conn, "full", "claude-code", "/proj", "full path", t);
