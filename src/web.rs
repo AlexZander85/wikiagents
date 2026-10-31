@@ -171,6 +171,27 @@ fn handle_request(
     ACCEPT_GZIP.with(|g| g.set(gzip));
     let url = request.url().to_string();
     let (path, query) = url.split_once('?').unwrap_or((url.as_str(), ""));
+    // CSRF: no browser request that a hostile page can make on its own -
+    // `<img src>`, `<form>` or a navigation - is able to carry a custom header,
+    // and a cross-origin `fetch` that adds one is held back by a CORS preflight
+    // this server never answers. Only the UI's own `jget`/`jpost` send it.
+    if path.starts_with("/api/") {
+        let from_our_ui = request
+            .headers()
+            .iter()
+            .any(|h| h.field.equiv("X-WikiAgents") && h.value.as_str().trim() == "1");
+        if !from_our_ui {
+            let _ = request.respond(Response::from_string("forbidden").with_status_code(403));
+            return;
+        }
+        // Reading the index over the API is harmless; anything that changes
+        // state or exports the database must be an explicit POST.
+        if POST_ONLY_PATHS.contains(&path) && request.method().as_str() != "POST" {
+            let _ =
+                request.respond(Response::from_string("method not allowed").with_status_code(405));
+            return;
+        }
+    }
     let result = match path {
         "/" => html(INDEX_HTML),
         "/api/stats" => api_stats(conn),
@@ -183,11 +204,11 @@ fn handle_request(
         "/api/sync" => api_sync(conn, sync_lock),
         "/api/favorites" => api_favorites(conn),
         "/api/favorite" => api_favorite(conn, query),
-        "/api/forget" => api_forget(conn, query),
+        "/api/forget" => api_forget(conn, &mut request, query),
         "/api/brief" => api_brief(conn, query),
         "/api/snippets" => api_snippets(conn, query),
         "/api/snippet/save" => api_snippet_save(conn, &mut request, query),
-        "/api/snippet/delete" => api_snippet_delete(conn, query),
+        "/api/snippet/delete" => api_snippet_delete(conn, &mut request, query),
         "/api/snippet/rename" => api_snippet_rename(conn, &mut request, query),
         "/api/subagents" => api_subagents(conn, query),
         "/api/analytics" => api_analytics(conn),
@@ -225,6 +246,18 @@ fn handle_request(
 }
 
 type Boxed = Response<Box<dyn std::io::Read + Send>>;
+
+/// Endpoints that mutate the index or move data out of it. They accept POST
+/// only, so a crafted URL can never be triggered by a plain GET.
+const POST_ONLY_PATHS: &[&str] = &[
+    "/api/backup/config",
+    "/api/backup/restore",
+    "/api/backup/run",
+    "/api/forget",
+    "/api/snippet/delete",
+    "/api/snippet/rename",
+    "/api/snippet/save",
+];
 
 /// True only for the loopback host:port we bound. Anything else (notably an
 /// attacker hostname rebound to 127.0.0.1) is rejected, defeating DNS rebinding.
@@ -906,8 +939,17 @@ fn api_favorite(conn: &Connection, query: &str) -> Result<Boxed> {
     json_response(json!({ "ok": true, "id": id, "favorite": fav }))
 }
 
-fn api_forget(conn: &mut Connection, query: &str) -> Result<Boxed> {
-    let id = param(query, "id").unwrap_or_default();
+fn api_forget(conn: &mut Connection, req: &mut tiny_http::Request, query: &str) -> Result<Boxed> {
+    // The UI posts JSON; the body is read even when the id comes from the query,
+    // so a keep-alive socket is left with nothing unconsumed.
+    let mut body = String::new();
+    let _ = req.as_reader().read_to_string(&mut body);
+    let json_body: Option<serde_json::Value> = serde_json::from_str(&body).ok();
+    let id = json_body
+        .as_ref()
+        .and_then(|v| v.get("id").and_then(|s| s.as_str()).map(String::from))
+        .or_else(|| param(query, "id"))
+        .unwrap_or_default();
     if id.is_empty() {
         return json_response(json!({ "ok": false, "error": "missing id" }));
     }
@@ -1074,11 +1116,24 @@ fn api_snippets(conn: &Connection, query: &str) -> Result<Boxed> {
     json_response(json!(snippets))
 }
 
-fn api_snippet_delete(conn: &Connection, query: &str) -> Result<Boxed> {
-    let id: i64 = param(query, "id")
-        .context("missing id")?
-        .parse()
-        .context("invalid id")?;
+fn api_snippet_delete(
+    conn: &Connection,
+    req: &mut tiny_http::Request,
+    query: &str,
+) -> Result<Boxed> {
+    let mut body = String::new();
+    let _ = req.as_reader().read_to_string(&mut body);
+    let json_body: Option<serde_json::Value> = serde_json::from_str(&body).ok();
+    let id = json_body
+        .as_ref()
+        .and_then(|v| {
+            v.get("id").and_then(|n| {
+                n.as_i64()
+                    .or_else(|| n.as_str().and_then(|s| s.parse().ok()))
+            })
+        })
+        .or_else(|| param(query, "id").and_then(|s| s.parse().ok()))
+        .context("missing id")?;
     let ok = index::delete_snippet(conn, id)?;
     json_response(json!({ "ok": ok, "id": id }))
 }

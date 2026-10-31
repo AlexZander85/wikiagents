@@ -369,7 +369,7 @@ fn web_reads_external(source_exists: bool) {
         .unwrap();
     write!(
         stream,
-        "GET /api/session/{} HTTP/1.1\r\nHost: {address}\r\nConnection: close\r\n\r\n",
+        "GET /api/session/{} HTTP/1.1\r\nHost: {address}\r\nX-WikiAgents: 1\r\nConnection: close\r\n\r\n",
         fixture.id
     )
     .unwrap();

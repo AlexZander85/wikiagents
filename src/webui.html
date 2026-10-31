@@ -4139,8 +4139,12 @@ function escapeHtml(str) {
     .replace(/'/g, "&#039;");
 }
 
+/* The server answers /api/* only when this header is present: no cross-site
+   page can set it, so it is what tells our own calls from someone else's. */
+const API_HEADERS = { "X-WikiAgents": "1" };
+
 async function jget(url) {
-  const r = await fetch(url);
+  const r = await fetch(url, { headers: API_HEADERS });
   if (!r.ok) throw new Error(await r.text());
   return r.json();
 }
@@ -4148,7 +4152,7 @@ async function jget(url) {
 async function jpost(url, data) {
   const r = await fetch(url, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { ...API_HEADERS, "Content-Type": "application/json" },
     body: JSON.stringify(data),
   });
   if (!r.ok) throw new Error(await r.text());
@@ -6883,7 +6887,7 @@ async function deleteSnippet(snip) {
   const confirmMsg = (L.confirmDeleteSnippet || 'Delete snippet "%s"?').replace("%s", snip.title || "Snippet");
   if (confirm(confirmMsg)) {
     try {
-      await jget(`/api/snippet/delete?id=${snip.id}`);
+      await jpost("/api/snippet/delete", { id: snip.id });
       showToast(L.snippetUnpinnedToast || "Snippet removed");
       refreshSnippetsBadge();
       loadSnippets($("snippet-q")?.value || "", snippetsSelectedLang);
@@ -7216,7 +7220,7 @@ function setupContextMenu() {
       const title = activeSessionTarget.title;
       const msg = L.confirmForget ? L.confirmForget(title) : `Permanently delete "${title}" from search index?`;
       if (confirm(msg)) {
-        const res = await jget(`/api/forget?id=${encodeURIComponent(sId)}`);
+        const res = await jpost("/api/forget", { id: sId });
         if (res && res.ok) {
           favoriteSet.delete(sId);
           activeSessionTarget.element?.remove();
@@ -7742,7 +7746,7 @@ async function togglePinMessage(s, msgIdx, text, btn, pinnedSet, role, ts) {
       const snips = await jget(`/api/snippets?session_id=${encodeURIComponent(s.id)}`);
       const target = (snips || []).find((x) => Number(x.message_idx) === Number(msgIdx));
       if (target) {
-        await jget(`/api/snippet/delete?id=${target.id}`);
+        await jpost("/api/snippet/delete", { id: target.id });
         pinnedSet.delete(Number(msgIdx));
         btn.classList.remove("pinned");
         btn.innerHTML = pinBtnHtml(false);
@@ -8872,7 +8876,7 @@ async function openBackupModal() {
   const overlay = document.getElementById("backup-modal-overlay");
   overlay.style.display = "flex";
   try {
-    const res = await fetch("/api/backup/status");
+    const res = await fetch("/api/backup/status", { headers: API_HEADERS });
     if (res.ok) {
       const data = await res.json();
       if (data.repo_url) {
@@ -8911,7 +8915,7 @@ async function saveBackupConfig() {
   try {
     const res = await fetch("/api/backup/config", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { ...API_HEADERS, "Content-Type": "application/json" },
       body: JSON.stringify({ repo_url: url })
     });
     if (res.ok) {
@@ -8931,7 +8935,7 @@ async function testBackupConnection() {
   try {
     const res = await fetch("/api/backup/test", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { ...API_HEADERS, "Content-Type": "application/json" },
       body: JSON.stringify({ repo_url: url })
     });
     const data = await res.json();
@@ -8963,7 +8967,7 @@ function startBackupPolling() {
 
   backupPollTimer = setInterval(async () => {
     try {
-      const res = await fetch("/api/backup/status");
+      const res = await fetch("/api/backup/status", { headers: API_HEADERS });
       if (!res.ok) return;
       const data = await res.json();
       if (!data.progress) return;
@@ -9024,7 +9028,7 @@ async function runRestoreNow() {
   try {
     const res = await fetch("/api/backup/restore", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { ...API_HEADERS, "Content-Type": "application/json" },
       body: JSON.stringify({ repo_url: url })
     });
     const data = await res.json();
@@ -9057,7 +9061,7 @@ async function runBackupNow() {
   try {
     const res = await fetch("/api/backup/run", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { ...API_HEADERS, "Content-Type": "application/json" },
       body: JSON.stringify({ repo_url: url })
     });
     const data = await res.json();
