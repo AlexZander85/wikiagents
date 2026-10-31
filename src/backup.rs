@@ -48,6 +48,16 @@ pub struct BackupReport {
     pub timestamp: i64,
 }
 
+/// What one restore actually did. `skipped` matters as much as `restored`: a
+/// session already in `files` is newer locally, and quietly re-adding its
+/// messages would duplicate every row on the second run.
+#[derive(Debug, Clone, Copy, Default, Serialize)]
+pub struct RestoreReport {
+    pub restored: usize,
+    pub skipped: usize,
+    pub failed: usize,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BackupProgress {
     pub is_running: bool,
@@ -449,7 +459,7 @@ pub fn run_backup(conn: &Connection, repo_url: &str) -> Result<BackupReport> {
 /// 1. Pulls latest commits from GitHub repository.
 /// 2. Restores curated tables (favorites, tags, notes, summaries, snippets).
 /// 3. Restores granular sessions into SQLite index tables.
-pub fn run_restore(conn: &mut Connection, repo_url: &str) -> Result<usize> {
+pub fn run_restore(conn: &mut Connection, repo_url: &str) -> Result<RestoreReport> {
     let repo_url = repo_url.trim();
     if repo_url.is_empty() {
         let err = "GitHub repository URL is empty".to_string();
@@ -466,14 +476,17 @@ pub fn run_restore(conn: &mut Connection, repo_url: &str) -> Result<usize> {
         p.log_messages = vec!["[1/4] Подключение к GitHub и git pull...".to_string()];
     });
 
-    let res = (|| -> Result<usize> {
+    let res = (|| -> Result<RestoreReport> {
         let backup_dir = resolve_backup_dir()?;
         ensure_git_repo(&backup_dir, repo_url)?;
 
-        // 1. Fetch and pull latest from origin main
-        let _ = run_git_cmd(&backup_dir, &["fetch", "origin", "main"]);
-        let _ = run_git_cmd(&backup_dir, &["checkout", "-B", "main", "origin/main"]);
-        let _ = run_git_cmd(&backup_dir, &["pull", "origin", "main"]);
+        // 1. Fetch and pull latest from origin main. Failures here are fatal:
+        // restoring from a stale local clone would silently hand back old data
+        // and report success.
+        run_git_cmd(&backup_dir, &["fetch", "origin", "main"])
+            .context("не удалось получить данные из GitHub: проверьте URL и доступ")?;
+        run_git_cmd(&backup_dir, &["checkout", "-B", "main", "origin/main"])
+            .context("в репозитории нет ветки main с данными бэкапа")?;
         log_step(
             1,
             "Репозиторий обновлен",
@@ -499,11 +512,14 @@ pub fn run_restore(conn: &mut Connection, repo_url: &str) -> Result<usize> {
             "Восстановление сессий...",
             "[3/4] Восстановление сессий агентов из sessions/...",
         );
-        let total = restore_granular_sessions(conn, &backup_dir.join("sessions"))?;
+        let report = restore_granular_sessions(conn, &backup_dir.join("sessions"))?;
         log_step(
             3,
             "Сессии восстановлены",
-            &format!("[3/4] Восстановление сессий... OK (всего: {})", total),
+            &format!(
+                "[3/4] Восстановление сессий... OK (новых: {}, пропущено: {}, ошибок: {})",
+                report.restored, report.skipped, report.failed
+            ),
         );
 
         // 4. Update local meta
@@ -513,21 +529,21 @@ pub fn run_restore(conn: &mut Connection, repo_url: &str) -> Result<usize> {
             4,
             "Готово",
             &format!(
-                "[4/4] УСПЕШНО! Восстановлено {} сессий из GitHub бэкапа.",
-                total
+                "[4/4] УСПЕШНО! Восстановлено {} сессий из GitHub бэкапа ({} уже были, {} файлов пропущено).",
+                report.restored, report.skipped, report.failed
             ),
         );
 
-        Ok(total)
+        Ok(report)
     })();
 
     match res {
-        Ok(total) => {
+        Ok(report) => {
             set_progress(|p| {
                 p.is_running = false;
                 p.stage = "Восстановление завершено".to_string();
             });
-            Ok(total)
+            Ok(report)
         }
         Err(e) => {
             set_error(&e.to_string());
@@ -614,7 +630,7 @@ fn push_integrating(dir: &Path) -> Result<()> {
 // Helpers: Curated Data Export
 // ---------------------------------------------------------------------------
 
-fn export_curated_tables(conn: &Connection, dest_dir: &Path) -> Result<usize> {
+pub fn export_curated_tables(conn: &Connection, dest_dir: &Path) -> Result<usize> {
     // 1. Favorites
     let mut fav_stmt =
         conn.prepare("SELECT session_id, created_at FROM favorites ORDER BY created_at DESC")?;
@@ -625,8 +641,9 @@ fn export_curated_tables(conn: &Connection, dest_dir: &Path) -> Result<usize> {
                 "created_at": r.get::<_, Option<String>>(1)?,
             }))
         })?
-        .filter_map(Result::ok)
-        .collect();
+        // A row that fails to read is a row the backup would lose without
+        // saying so, so these exports propagate instead of filtering.
+        .collect::<Result<Vec<Value>, rusqlite::Error>>()?;
     fs::write(
         dest_dir.join("favorites.json"),
         serde_json::to_string_pretty(&fav_rows)?,
@@ -641,8 +658,7 @@ fn export_curated_tables(conn: &Connection, dest_dir: &Path) -> Result<usize> {
                 "tag": r.get::<_, String>(1)?,
             }))
         })?
-        .filter_map(Result::ok)
-        .collect();
+        .collect::<Result<Vec<Value>, rusqlite::Error>>()?;
     fs::write(
         dest_dir.join("tags.json"),
         serde_json::to_string_pretty(&tag_rows)?,
@@ -659,8 +675,7 @@ fn export_curated_tables(conn: &Connection, dest_dir: &Path) -> Result<usize> {
                 "updated": r.get::<_, Option<String>>(2)?,
             }))
         })?
-        .filter_map(Result::ok)
-        .collect();
+        .collect::<Result<Vec<Value>, rusqlite::Error>>()?;
     fs::write(
         dest_dir.join("notes.json"),
         serde_json::to_string_pretty(&note_rows)?,
@@ -672,22 +687,25 @@ fn export_curated_tables(conn: &Connection, dest_dir: &Path) -> Result<usize> {
     )?;
     let snip_rows: Vec<Value> = snip_stmt
         .query_map([], |r| {
+            // `id` is an INTEGER and `lang`/`tags`/`message_ts` are nullable, so
+            // reading them as String/i64 threw on every real row and the caller
+            // dropped the whole snippet - the export silently contained no
+            // knowledge base at all.
             Ok(json!({
-                "id": r.get::<_, String>(0)?,
+                "id": r.get::<_, i64>(0)?,
                 "session_id": r.get::<_, String>(1)?,
                 "message_idx": r.get::<_, i64>(2)?,
                 "title": r.get::<_, String>(3)?,
-                "lang": r.get::<_, String>(4)?,
+                "lang": r.get::<_, Option<String>>(4)?,
                 "content": r.get::<_, String>(5)?,
-                "tags": r.get::<_, String>(6)?,
+                "tags": r.get::<_, Option<String>>(6)?,
                 "created_at": r.get::<_, String>(7)?,
                 "tool": r.get::<_, Option<String>>(8)?,
                 "role": r.get::<_, Option<String>>(9)?,
-                "message_ts": r.get::<_, Option<i64>>(10)?,
+                "message_ts": r.get::<_, Option<String>>(10)?,
             }))
         })?
-        .filter_map(Result::ok)
-        .collect();
+        .collect::<Result<Vec<Value>, rusqlite::Error>>()?;
     fs::write(
         dest_dir.join("snippets.json"),
         serde_json::to_string_pretty(&snip_rows)?,
@@ -705,8 +723,7 @@ fn export_curated_tables(conn: &Connection, dest_dir: &Path) -> Result<usize> {
                 "kind": r.get::<_, Option<String>>(3)?,
             }))
         })?
-        .filter_map(Result::ok)
-        .collect();
+        .collect::<Result<Vec<Value>, rusqlite::Error>>()?;
     fs::write(
         dest_dir.join("summaries.json"),
         serde_json::to_string_pretty(&sum_rows)?,
@@ -870,7 +887,7 @@ fn safe_file_component(s: &str) -> String {
     }
 }
 
-fn export_granular_sessions(conn: &Connection, dest_dir: &Path) -> Result<(usize, usize)> {
+pub fn export_granular_sessions(conn: &Connection, dest_dir: &Path) -> Result<(usize, usize)> {
     // 1. Remove obsolete monolithic database directory if present
     let old_db = dest_dir.join("database");
     if old_db.exists() {
@@ -910,7 +927,15 @@ fn export_granular_sessions(conn: &Connection, dest_dir: &Path) -> Result<(usize
                 mtime: r.get(8)?,
             })
         })?
-        .filter_map(Result::ok)
+        // One unreadable row must not abort the whole export, but it must not
+        // vanish without a trace either.
+        .filter_map(|r| match r {
+            Ok(row) => Some(row),
+            Err(e) => {
+                eprintln!("backup: skipping an unreadable files row ({e})");
+                None
+            }
+        })
         .collect();
     drop(stmt);
 
@@ -977,20 +1002,17 @@ fn export_granular_sessions(conn: &Connection, dest_dir: &Path) -> Result<(usize
                     "is_rewound": is_rewound,
                 }))
             })?
-            .filter_map(Result::ok)
-            .collect();
+            .collect::<Result<Vec<Value>, rusqlite::Error>>()?;
 
         // Fetch touched files
         let touched: Vec<String> = touched_stmt
             .query_map([&row.session_id], |r| r.get(0))?
-            .filter_map(Result::ok)
-            .collect();
+            .collect::<Result<Vec<String>, rusqlite::Error>>()?;
 
         // Fetch commits
         let commits: Vec<String> = commits_stmt
             .query_map([&row.session_id], |r| r.get(0))?
-            .filter_map(Result::ok)
-            .collect();
+            .collect::<Result<Vec<String>, rusqlite::Error>>()?;
 
         let session_data = json!({
             "id": row.session_id,
@@ -1038,10 +1060,11 @@ fn write_restore_scripts(dest_dir: &Path) -> Result<()> {
 """
 WikiAgents Backup Restorer.
 Restores all sessions, curated data, and web chats from this repository into a SQLite index.db.
+Requires Python 3 (the standard-library sqlite3 is enough - no pip install).
 Usage:
     python restore.py [dest_index.db]
 """
-import os, sys, glob, json, sqlite3
+import os, sys, glob, json, sqlite3, datetime
 
 def restore(dest_db="index.db"):
     print(f"[*] Restoring WikiAgents database to: {dest_db}")
@@ -1074,34 +1097,54 @@ def restore(dest_db="index.db"):
         created_at TEXT NOT NULL, tool TEXT, role TEXT, message_ts INTEGER
     )""")
 
-    try:
-        cur.execute("""CREATE VIRTUAL TABLE IF NOT EXISTS msgs USING fts5(session_id UNINDEXED, text)""")
-    except Exception:
-        pass
+    # External-content FTS5 over `messages`: one `text` column whose rowid IS
+    # messages.id, with the trigram tokenizer the app defaults to. A standalone
+    # fts5 table (as this script used to create) does not match the real schema
+    # and the app's `msgs(rowid, text)` insert would fail on it.
+    cur.execute("""CREATE VIRTUAL TABLE IF NOT EXISTS msgs USING fts5(
+        text, content='messages', content_rowid='id', tokenize='trigram')""")
 
     # 1. Restore Curated
     curated_dir = "curated"
     if os.path.exists(curated_dir):
         print("[*] Restoring curated tables...")
-        for name, tbl, cols in [
-            ("favorites.json", "favorites", ["session_id", "created_at"]),
-            ("tags.json", "tags", ["session_id", "tag"]),
-            ("notes.json", "notes", ["session_id", "note", "updated"]),
-            ("summaries.json", "summaries", ["session_id", "summary", "created", "kind"]),
-            ("snippets.json", "snippets", ["id", "session_id", "message_idx", "title", "lang", "content", "tags", "created_at", "tool", "role", "message_ts"]),
+        # Merge, never overwrite: what this machine already has stays. Same
+        # rules as the app's restore, so both paths give the same result.
+        for name, tbl, cols, sql in [
+            ("favorites.json", "favorites", ["session_id", "created_at"],
+             "INSERT OR IGNORE INTO favorites (session_id, created_at) VALUES (?, ?)"),
+            ("tags.json", "tags", ["session_id", "tag"],
+             "INSERT OR IGNORE INTO tags (session_id, tag) VALUES (?, ?)"),
+            ("notes.json", "notes", ["session_id", "note", "updated"],
+             """INSERT INTO notes (session_id, note, updated) VALUES (?, ?, ?)
+                ON CONFLICT(session_id) DO UPDATE SET note=excluded.note, updated=excluded.updated
+                WHERE COALESCE(excluded.updated,'') > COALESCE(notes.updated,'')"""),
+            ("summaries.json", "summaries", ["session_id", "summary", "created", "kind"],
+             """INSERT INTO summaries (session_id, summary, created, kind) VALUES (?, ?, ?, ?)
+                ON CONFLICT(session_id) DO UPDATE SET summary=excluded.summary, created=excluded.created, kind=excluded.kind
+                WHERE COALESCE(excluded.created,'') > COALESCE(summaries.created,'')"""),
+            ("snippets.json", "snippets", ["session_id", "message_idx", "title", "lang", "content", "tags", "created_at", "tool", "role", "message_ts"],
+             # ids are per-machine AUTOINCREMENT, so they collide; match on the content key instead.
+             """INSERT INTO snippets (session_id, message_idx, title, lang, content, tags, created_at, tool, role, message_ts)
+                SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                WHERE NOT EXISTS (SELECT 1 FROM snippets WHERE session_id=? AND message_idx=? AND title=?)"""),
         ]:
             p = os.path.join(curated_dir, name)
             if os.path.exists(p):
                 with open(p, "r", encoding="utf-8") as f:
                     rows = json.load(f)
-                q = f"INSERT OR REPLACE INTO {tbl} ({','.join(cols)}) VALUES ({','.join(['?']*len(cols))})"
-                cur.executemany(q, [[r.get(c) for c in cols] for r in rows])
-                print(f"  [OK] {tbl}: {len(rows)} rows restored.")
+                vals = [[r.get(c) for c in cols] for r in rows]
+                if name == "snippets.json":
+                    # the NOT EXISTS half repeats the key columns
+                    vals = [v + v[:3] for v in vals]
+                cur.executemany(sql, vals)
+                print(f"  [OK] {tbl}: {len(rows)} rows merged.")
 
     # 2. Restore Sessions
-    session_files = glob.glob(os.path.join("sessions", "*", "*.json"))
+    archived_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    session_files = sorted(glob.glob(os.path.join("sessions", "*", "*.json")))
     print(f"[*] Restoring {len(session_files)} granular sessions...")
-    restored = 0
+    restored = skipped = failed = 0
     for sf in session_files:
         try:
             with open(sf, "r", encoding="utf-8") as f:
@@ -1119,11 +1162,20 @@ def restore(dest_db="index.db"):
             touched = s.get("touched_files", [])
             commits = s.get("commit_shas", [])
 
+            cur.execute("SELECT 1 FROM files WHERE session_id = ? LIMIT 1", (sid,))
+            if cur.fetchone():
+                # The local copy is fresher; re-adding it would duplicate
+                # every message of this session.
+                skipped += 1
+                continue
+
             fake_path = f"restored://{tool}/{sid}"
-            cur.execute("""INSERT OR REPLACE INTO files
-                (path, mtime, size, session_id, tool, project, title, started, ended, msg_count, kind, parent_id)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (fake_path, mtime, len(msgs), sid, tool, proj, title, started, ended, len(msgs), kind, parent_id)
+            # archived_at keeps the sync sweep away from restored:// rows:
+            # it only removes sessions with archived_at IS NULL.
+            cur.execute("""INSERT INTO files
+                (path, mtime, size, session_id, tool, project, title, started, ended, msg_count, kind, parent_id, archived_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (fake_path, mtime, len(msgs), sid, tool, proj, title, started, ended, len(msgs), kind, parent_id, archived_at)
             )
 
             for m in msgs:
@@ -1133,10 +1185,9 @@ def restore(dest_db="index.db"):
                 is_rewound = 1 if m.get("is_rewound") else 0
                 cur.execute("""INSERT INTO messages (session_id, role, text, full_text, is_rewound)
                     VALUES (?, ?, ?, ?, ?)""", (sid, role, text, full_text, is_rewound))
-                try:
-                    cur.execute("INSERT INTO msgs(session_id, text) VALUES (?, ?)", (sid, text))
-                except Exception:
-                    pass
+                # msgs is external-content FTS: the rowid is the messages.id
+                # just inserted, and the text must be byte-identical.
+                cur.execute("INSERT INTO msgs(rowid, text) VALUES (?, ?)", (cur.lastrowid, text))
 
             for t in touched:
                 cur.execute("INSERT OR IGNORE INTO touched (session_id, path) VALUES (?, ?)", (sid, t))
@@ -1145,12 +1196,14 @@ def restore(dest_db="index.db"):
                 cur.execute("INSERT OR IGNORE INTO session_commits (session_id, commit_sha) VALUES (?, ?)", (sid, c))
 
             restored += 1
-        except Exception:
+        except Exception as e:
+            print(f"  [SKIP] {sf}: {e}")
+            failed += 1
             continue
 
     conn.commit()
     conn.close()
-    print(f"[OK] SUCCESS: {restored} sessions successfully restored to {dest_db}!")
+    print(f"[OK] SUCCESS: {restored} sessions restored, {skipped} already present, {failed} failed -> {dest_db}!")
 
 if __name__ == "__main__":
     dest = sys.argv[1] if len(sys.argv) > 1 else "index.db"
@@ -1159,13 +1212,16 @@ if __name__ == "__main__":
     fs::write(dest_dir.join("restore.py"), py_restore)?;
 
     let ps_restore = r#"# WikiAgents Backup Restorer (PowerShell)
+# REQUIRES PYTHON 3 - this script only locates python and runs restore.py.
+# Without Python 3 nothing is restored; install it or use WikiAgents itself
+# (Backup window -> "Синхронизировать / Восстановить").
 param([string]$dest = "index.db")
 
 if (Get-Command python -ErrorAction SilentlyContinue) {
     Write-Host "Restoring WikiAgents database via python restore.py $dest..."
     python restore.py $dest
 } else {
-    Write-Host "Python not found. Please install Python 3 or use WikiAgents to restore sessions."
+    Write-Host "Python 3 not found. Install Python 3 or use WikiAgents to restore sessions."
 }
 "#;
     fs::write(dest_dir.join("restore.ps1"), ps_restore)?;
@@ -1173,26 +1229,26 @@ if (Get-Command python -ErrorAction SilentlyContinue) {
     Ok(())
 }
 
-fn restore_curated_tables(conn: &Connection, curated_dir: &Path) -> Result<()> {
+pub fn restore_curated_tables(conn: &Connection, curated_dir: &Path) -> Result<()> {
     if !curated_dir.exists() {
         return Ok(());
     }
 
+    // A restore merges, it does not overwrite. Whatever this machine already
+    // knows is kept: stars, tags and snippets are sets, and a note or summary
+    // edited after the backup would otherwise be lost to an older remote copy.
+
     // 1. Favorites
     let fav_path = curated_dir.join("favorites.json");
     if fav_path.exists() {
-        if let Ok(data) = fs::read_to_string(&fav_path) {
-            if let Ok(rows) = serde_json::from_str::<Vec<Value>>(&data) {
-                let mut stmt = conn.prepare(
-                    "INSERT OR REPLACE INTO favorites (session_id, created_at) VALUES (?1, ?2)",
-                )?;
-                for r in rows {
-                    let sid = r.get("session_id").and_then(|v| v.as_str());
-                    let created = r.get("created_at").and_then(|v| v.as_str());
-                    if let Some(s) = sid {
-                        let _ = stmt.execute(rusqlite::params![s, created]);
-                    }
-                }
+        let rows = read_curated_rows(&fav_path)?;
+        let mut stmt = conn
+            .prepare("INSERT OR IGNORE INTO favorites (session_id, created_at) VALUES (?1, ?2)")?;
+        for r in rows {
+            let sid = r.get("session_id").and_then(|v| v.as_str());
+            let created = r.get("created_at").and_then(|v| v.as_str());
+            if let Some(s) = sid {
+                stmt.execute(rusqlite::params![s, created])?;
             }
         }
     }
@@ -1200,37 +1256,33 @@ fn restore_curated_tables(conn: &Connection, curated_dir: &Path) -> Result<()> {
     // 2. Tags
     let tags_path = curated_dir.join("tags.json");
     if tags_path.exists() {
-        if let Ok(data) = fs::read_to_string(&tags_path) {
-            if let Ok(rows) = serde_json::from_str::<Vec<Value>>(&data) {
-                let mut stmt =
-                    conn.prepare("INSERT OR REPLACE INTO tags (session_id, tag) VALUES (?1, ?2)")?;
-                for r in rows {
-                    let sid = r.get("session_id").and_then(|v| v.as_str());
-                    let tag = r.get("tag").and_then(|v| v.as_str());
-                    if let (Some(s), Some(t)) = (sid, tag) {
-                        let _ = stmt.execute(rusqlite::params![s, t]);
-                    }
-                }
+        let rows = read_curated_rows(&tags_path)?;
+        let mut stmt =
+            conn.prepare("INSERT OR IGNORE INTO tags (session_id, tag) VALUES (?1, ?2)")?;
+        for r in rows {
+            let sid = r.get("session_id").and_then(|v| v.as_str());
+            let tag = r.get("tag").and_then(|v| v.as_str());
+            if let (Some(s), Some(t)) = (sid, tag) {
+                stmt.execute(rusqlite::params![s, t])?;
             }
         }
     }
 
-    // 3. Notes
+    // 3. Notes - one per session, so the newer timestamp wins.
     let notes_path = curated_dir.join("notes.json");
     if notes_path.exists() {
-        if let Ok(data) = fs::read_to_string(&notes_path) {
-            if let Ok(rows) = serde_json::from_str::<Vec<Value>>(&data) {
-                let mut stmt = conn.prepare(
-                    "INSERT OR REPLACE INTO notes (session_id, note, updated) VALUES (?1, ?2, ?3)",
-                )?;
-                for r in rows {
-                    let sid = r.get("session_id").and_then(|v| v.as_str());
-                    let note = r.get("note").and_then(|v| v.as_str());
-                    let updated = r.get("updated").and_then(|v| v.as_str());
-                    if let (Some(s), Some(n)) = (sid, note) {
-                        let _ = stmt.execute(rusqlite::params![s, n, updated]);
-                    }
-                }
+        let rows = read_curated_rows(&notes_path)?;
+        let mut stmt = conn.prepare(
+            "INSERT INTO notes (session_id, note, updated) VALUES (?1, ?2, ?3)
+             ON CONFLICT(session_id) DO UPDATE SET note = excluded.note, updated = excluded.updated
+             WHERE COALESCE(excluded.updated, '') > COALESCE(notes.updated, '')",
+        )?;
+        for r in rows {
+            let sid = r.get("session_id").and_then(|v| v.as_str());
+            let note = r.get("note").and_then(|v| v.as_str());
+            let updated = r.get("updated").and_then(|v| v.as_str());
+            if let (Some(s), Some(n)) = (sid, note) {
+                stmt.execute(rusqlite::params![s, n, updated])?;
             }
         }
     }
@@ -1238,50 +1290,54 @@ fn restore_curated_tables(conn: &Connection, curated_dir: &Path) -> Result<()> {
     // 4. Summaries
     let sum_path = curated_dir.join("summaries.json");
     if sum_path.exists() {
-        if let Ok(data) = fs::read_to_string(&sum_path) {
-            if let Ok(rows) = serde_json::from_str::<Vec<Value>>(&data) {
-                let mut stmt = conn.prepare(
-                    "INSERT OR REPLACE INTO summaries (session_id, summary, created, kind) VALUES (?1, ?2, ?3, ?4)",
-                )?;
-                for r in rows {
-                    let sid = r.get("session_id").and_then(|v| v.as_str());
-                    let sum = r.get("summary").and_then(|v| v.as_str());
-                    let created = r.get("created").and_then(|v| v.as_str());
-                    let kind = r.get("kind").and_then(|v| v.as_str());
-                    if let (Some(s), Some(u)) = (sid, sum) {
-                        let _ = stmt.execute(rusqlite::params![s, u, created, kind]);
-                    }
-                }
+        let rows = read_curated_rows(&sum_path)?;
+        let mut stmt = conn.prepare(
+            "INSERT INTO summaries (session_id, summary, created, kind) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(session_id) DO UPDATE SET summary = excluded.summary, created = excluded.created, kind = excluded.kind
+             WHERE COALESCE(excluded.created, '') > COALESCE(summaries.created, '')",
+        )?;
+        for r in rows {
+            let sid = r.get("session_id").and_then(|v| v.as_str());
+            let sum = r.get("summary").and_then(|v| v.as_str());
+            let created = r.get("created").and_then(|v| v.as_str());
+            let kind = r.get("kind").and_then(|v| v.as_str());
+            if let (Some(s), Some(u)) = (sid, sum) {
+                stmt.execute(rusqlite::params![s, u, created, kind])?;
             }
         }
     }
 
-    // 5. Snippets
+    // 5. Snippets. `snippets.id` is an INTEGER PRIMARY KEY AUTOINCREMENT that
+    // each machine numbers from 1, so «INSERT OR IGNORE by id» would silently
+    // drop the other machine's snippet on any id collision - and the id used to
+    // be read with `.as_str()`, which never matched a number, so no snippet was
+    // ever restored at all. Match on the content key instead: it dedupes a
+    // repeated restore without renumbering or discarding anything local.
     let snip_path = curated_dir.join("snippets.json");
     if snip_path.exists() {
-        if let Ok(data) = fs::read_to_string(&snip_path) {
-            if let Ok(rows) = serde_json::from_str::<Vec<Value>>(&data) {
-                let mut stmt = conn.prepare(
-                    "INSERT OR REPLACE INTO snippets (id, session_id, message_idx, title, lang, content, tags, created_at, tool, role, message_ts) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
-                )?;
-                for r in rows {
-                    let id = r.get("id").and_then(|v| v.as_str());
-                    let sid = r.get("session_id").and_then(|v| v.as_str());
-                    let midx = r.get("message_idx").and_then(|v| v.as_i64()).unwrap_or(0);
-                    let title = r.get("title").and_then(|v| v.as_str()).unwrap_or("");
-                    let lang = r.get("lang").and_then(|v| v.as_str()).unwrap_or("");
-                    let content = r.get("content").and_then(|v| v.as_str()).unwrap_or("");
-                    let tags = r.get("tags").and_then(|v| v.as_str()).unwrap_or("");
-                    let created = r.get("created_at").and_then(|v| v.as_str()).unwrap_or("");
-                    let tool = r.get("tool").and_then(|v| v.as_str());
-                    let role = r.get("role").and_then(|v| v.as_str());
-                    let mts = r.get("message_ts").and_then(|v| v.as_i64());
-                    if let (Some(i), Some(s)) = (id, sid) {
-                        let _ = stmt.execute(rusqlite::params![
-                            i, s, midx, title, lang, content, tags, created, tool, role, mts
-                        ]);
-                    }
-                }
+        let rows = read_curated_rows(&snip_path)?;
+        let mut stmt = conn.prepare(
+            "INSERT INTO snippets (session_id, message_idx, title, lang, content, tags, created_at, tool, role, message_ts)
+             SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10
+             WHERE NOT EXISTS (
+               SELECT 1 FROM snippets
+               WHERE session_id = ?1 AND message_idx = ?2 AND title = ?3)",
+        )?;
+        for r in rows {
+            let sid = r.get("session_id").and_then(|v| v.as_str());
+            let midx = r.get("message_idx").and_then(|v| v.as_i64()).unwrap_or(0);
+            let title = r.get("title").and_then(|v| v.as_str()).unwrap_or("");
+            let lang = r.get("lang").and_then(|v| v.as_str());
+            let content = r.get("content").and_then(|v| v.as_str()).unwrap_or("");
+            let tags = r.get("tags").and_then(|v| v.as_str());
+            let created = r.get("created_at").and_then(|v| v.as_str()).unwrap_or("");
+            let tool = r.get("tool").and_then(|v| v.as_str());
+            let role = r.get("role").and_then(|v| v.as_str());
+            let mts = r.get("message_ts").and_then(|v| v.as_str());
+            if let Some(s) = sid {
+                stmt.execute(rusqlite::params![
+                    s, midx, title, lang, content, tags, created, tool, role, mts
+                ])?;
             }
         }
     }
@@ -1289,9 +1345,23 @@ fn restore_curated_tables(conn: &Connection, curated_dir: &Path) -> Result<()> {
     Ok(())
 }
 
-fn restore_granular_sessions(conn: &mut Connection, sessions_dir: &Path) -> Result<usize> {
+/// One curated export file, or the error that made it unusable. Silently
+/// skipping a corrupt `notes.json` used to look exactly like "nothing to
+/// restore".
+fn read_curated_rows(path: &Path) -> Result<Vec<Value>> {
+    let data = fs::read_to_string(path)
+        .with_context(|| format!("failed to read backup file {}", path.display()))?;
+    serde_json::from_str::<Vec<Value>>(&data)
+        .with_context(|| format!("backup file {} is not valid JSON", path.display()))
+}
+
+pub fn restore_granular_sessions(
+    conn: &mut Connection,
+    sessions_dir: &Path,
+) -> Result<RestoreReport> {
+    let mut report = RestoreReport::default();
     if !sessions_dir.exists() {
-        return Ok(0);
+        return Ok(report);
     }
 
     let mut session_paths = Vec::new();
@@ -1305,44 +1375,71 @@ fn restore_granular_sessions(conn: &mut Connection, sessions_dir: &Path) -> Resu
             session_paths.push(entry.path().to_path_buf());
         }
     }
-
-    let total = session_paths.len();
-    if total == 0 {
-        return Ok(0);
-    }
+    // Stable order, so a repeated restore skips the same sessions it restored
+    // first and a failure report is reproducible.
+    session_paths.sort();
 
     let tx = conn.transaction()?;
     {
+        let mut have_stmt = tx.prepare("SELECT 1 FROM files WHERE session_id = ?1 LIMIT 1")?;
+        // `archived_at` marks this row as restored rather than indexed from
+        // disk; the sync sweep only prunes rows with `archived_at IS NULL`, so
+        // without it the next sync would delete what we just restored.
         let mut file_stmt = tx.prepare(
-            "INSERT OR REPLACE INTO files (path, mtime, size, session_id, tool, project, title, started, ended, msg_count, kind, parent_id)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)"
+            "INSERT INTO files (path, mtime, size, session_id, tool, project, title, started, ended, msg_count, kind, parent_id, archived_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)"
         )?;
         let mut msg_stmt = tx.prepare(
             "INSERT INTO messages (session_id, role, text, full_text, is_rewound) VALUES (?1, ?2, ?3, ?4, ?5)"
         )?;
+        // `msgs` is an external-content FTS5 table over `messages`: it has one
+        // column, `text`, and its rowid IS the messages.id. Writing
+        // `(session_id, text)` there - as this used to - threw an error every
+        // time and the `.ok()` hid it, so restored sessions searched as empty.
         let mut fts_stmt = tx
-            .prepare("INSERT INTO msgs (session_id, text) VALUES (?1, ?2)")
-            .ok();
+            .prepare("INSERT INTO msgs (rowid, text) VALUES (?1, ?2)")
+            .context("failed to prepare msgs FTS insert during restore")?;
         let mut touched_stmt =
             tx.prepare("INSERT OR IGNORE INTO touched (session_id, path) VALUES (?1, ?2)")?;
         let mut commits_stmt = tx.prepare(
             "INSERT OR IGNORE INTO session_commits (session_id, commit_sha) VALUES (?1, ?2)",
         )?;
 
-        for path in session_paths {
-            let content = match fs::read_to_string(&path) {
+        let archived_at = Utc::now().to_rfc3339();
+
+        for path in &session_paths {
+            let content = match fs::read_to_string(path) {
                 Ok(c) => c,
-                Err(_) => continue,
+                Err(e) => {
+                    eprintln!("restore: skipping {} ({e})", path.display());
+                    report.failed += 1;
+                    continue;
+                }
             };
             let s: Value = match serde_json::from_str(&content) {
                 Ok(v) => v,
-                Err(_) => continue,
+                Err(e) => {
+                    eprintln!("restore: skipping unreadable {} ({e})", path.display());
+                    report.failed += 1;
+                    continue;
+                }
+            };
+            let Some(sid) = s.get("id").and_then(|v| v.as_str()) else {
+                eprintln!("restore: skipping {} (no session id)", path.display());
+                report.failed += 1;
+                continue;
             };
 
-            let sid = match s.get("id").and_then(|v| v.as_str()) {
-                Some(id) => id,
-                None => continue,
-            };
+            let exists: Option<i64> = have_stmt
+                .query_row(rusqlite::params![sid], |r| r.get(0))
+                .unwrap_or(None);
+            if exists.is_some() {
+                // The local copy is fresher, and its messages are already in
+                // the index. Restoring again would double every row.
+                report.skipped += 1;
+                continue;
+            }
+
             let tool = s.get("tool").and_then(|v| v.as_str()).unwrap_or("unknown");
             let project = s.get("project").and_then(|v| v.as_str()).unwrap_or("");
             let title = s.get("title").and_then(|v| v.as_str()).unwrap_or("");
@@ -1355,16 +1452,35 @@ fn restore_granular_sessions(conn: &mut Connection, sessions_dir: &Path) -> Resu
             let msg_count = msgs.map(|m| m.len()).unwrap_or(0) as i64;
             let fake_path = format!("restored://{tool}/{sid}");
 
-            let _ = file_stmt.execute(rusqlite::params![
-                fake_path, mtime, msg_count, sid, tool, project, title, started, ended, msg_count,
-                kind, parent_id
-            ]);
+            file_stmt.execute(rusqlite::params![
+                fake_path,
+                mtime,
+                msg_count,
+                sid,
+                tool,
+                project,
+                title,
+                started,
+                ended,
+                msg_count,
+                kind,
+                parent_id,
+                archived_at
+            ])?;
 
             if let Some(msgs) = msgs {
                 for m in msgs {
                     let role = m.get("role").and_then(|v| v.as_str()).unwrap_or("user");
-                    let text = m.get("text").and_then(|v| v.as_str()).unwrap_or("");
-                    let full_text = m.get("full_text").and_then(|v| v.as_str());
+                    // Normalize and redact exactly as the indexer does: the
+                    // external-content FTS row must be byte-identical to
+                    // messages.text or a later rebuild corrupts the index. An
+                    // old archive can also still hold raw secrets.
+                    let raw = m.get("text").and_then(|v| v.as_str()).unwrap_or("");
+                    let text = crate::redact::redact(&crate::util::nfc(raw)).into_owned();
+                    let full_text = m
+                        .get("full_text")
+                        .and_then(|v| v.as_str())
+                        .map(|t| crate::redact::redact(&crate::util::nfc(t)).into_owned());
                     let is_rewound = if m
                         .get("is_rewound")
                         .and_then(|v| v.as_bool())
@@ -1375,18 +1491,15 @@ fn restore_granular_sessions(conn: &mut Connection, sessions_dir: &Path) -> Resu
                         0
                     };
 
-                    let _ =
-                        msg_stmt.execute(rusqlite::params![sid, role, text, full_text, is_rewound]);
-                    if let Some(ref mut fts) = fts_stmt {
-                        let _ = fts.execute(rusqlite::params![sid, text]);
-                    }
+                    msg_stmt.execute(rusqlite::params![sid, role, text, full_text, is_rewound])?;
+                    fts_stmt.execute(rusqlite::params![tx.last_insert_rowid(), text])?;
                 }
             }
 
             if let Some(touched) = s.get("touched_files").and_then(|v| v.as_array()) {
                 for t in touched {
                     if let Some(p) = t.as_str() {
-                        let _ = touched_stmt.execute(rusqlite::params![sid, p]);
+                        touched_stmt.execute(rusqlite::params![sid, p])?;
                     }
                 }
             }
@@ -1394,14 +1507,16 @@ fn restore_granular_sessions(conn: &mut Connection, sessions_dir: &Path) -> Resu
             if let Some(commits) = s.get("commit_shas").and_then(|v| v.as_array()) {
                 for c in commits {
                     if let Some(sha) = c.as_str() {
-                        let _ = commits_stmt.execute(rusqlite::params![sid, sha]);
+                        commits_stmt.execute(rusqlite::params![sid, sha])?;
                     }
                 }
             }
+
+            report.restored += 1;
         }
     }
     tx.commit()?;
-    Ok(total)
+    Ok(report)
 }
 
 // ---------------------------------------------------------------------------

@@ -2305,8 +2305,11 @@ pub fn backup_cmd(
             anyhow::bail!("A backup or restore is already running. Wait for it to finish.");
         }
         let _guard = crate::backup::RunningGuard;
-        let count = crate::backup::run_restore(&mut conn, &repo_url)?;
-        println!("✓ Restore successful! Total sessions restored: {}", count);
+        let report = crate::backup::run_restore(&mut conn, &repo_url)?;
+        println!(
+            "✓ Restore successful! Restored: {}, already present: {}, unreadable files: {}",
+            report.restored, report.skipped, report.failed
+        );
         return Ok(());
     }
 

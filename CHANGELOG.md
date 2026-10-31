@@ -45,6 +45,40 @@ progress on the `fix/review-1.3` branch; this section grows as each phase lands.
 - **Backup README** reports the tools actually present in this export instead of
   a hardcoded provider count, and the connection test says «Доступ к репозиторию
   подтвержден (убедитесь, что репозиторий приватный)».
+- **Restored sessions are searchable again**: `msgs` is an external-content FTS5
+  table whose only column is `text` and whose rowid is `messages.id`, so the old
+  `INSERT INTO msgs (session_id, text)` failed on every message - and `.ok()` hid
+  it. A restore now writes `msgs(rowid, text)` exactly like the indexer.
+- **Restore is idempotent**: a session already in `files` is skipped instead of
+  re-inserted, so a second run no longer doubles every message. `run_restore`
+  returns a `RestoreReport { restored, skipped, failed }`, shown in the progress
+  log and by the CLI.
+- **Restore failures are no longer silent**: `git fetch` and
+  `git checkout -B main origin/main` propagate, so a restore cannot "succeed"
+  against a stale local clone; unreadable curated JSON aborts with the file name
+  instead of looking like an empty backup; SQL errors propagate instead of
+  `let _ =`, and a corrupt session file is counted in `failed`.
+- **Restore is a merge, not an overwrite**: notes and summaries only update when
+  the incoming `updated`/`created` is newer; favorites, tags and snippets use
+  ignore-on-conflict semantics, so local work survives.
+- **Snippets were never backed up or restored**: the export read the INTEGER
+  `snippets.id` (and nullable `lang`/`tags`/`message_ts`) as `String`/`i64`, so
+  every row errored and was dropped by `filter_map(Result::ok)` - the knowledge
+  base in the backup was always empty. Reading types now match the schema and
+  export rows propagate errors. Because `id` is a per-machine
+  `AUTOINCREMENT`, restoring dedupes on `(session_id, message_idx, title)`
+  rather than ignoring by id, which would have silently discarded one machine's
+  snippets on every collision.
+- **Restored rows carry `archived_at`**, so the sync sweep that removes sessions
+  that vanished from disk leaves `restored://` rows alone.
+- **`restore.py` matches the real schema**: `msgs` is created as
+  `fts5(text, content='messages', content_rowid='id', tokenize='trigram')`,
+  FTS rows are inserted with `cur.lastrowid`, existing sessions are skipped,
+  `archived_at` is set, and the `except Exception: pass` around the FTS write is
+  gone. Both scripts now say plainly that Python 3 is required.
+- New integration test `tests/backup_roundtrip.rs` covers export → restore →
+  search, the no-duplication guarantee and the newer-note-wins merge, without
+  invoking git.
 
 ## [1.2.1] - 2026-10-31 (WikiAgents)
 
