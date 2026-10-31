@@ -21,6 +21,30 @@ progress on the `fix/review-1.3` branch; this section grows as each phase lands.
   the `account_badge` trace test that still expected the pre-1.2.1 absolute-path
   match. A failing test no longer takes the rest of its file down with it: every
   shared `static Mutex` lock tolerates a poisoned lock.
+- **Backup never rewrites remote history**: the `push --force` path is gone. A
+  rejected push now fetches, rebases the other machine's commits under ours and
+  retries (up to 3 times with a pause); a real conflict aborts the rebase and
+  reports «выполните restore или разрешите вручную» instead of silently discarding
+  someone else's sessions.
+- **Credentials stay out of every artefact**: `https://user:token@host/…` is
+  reduced to the bare address in `manifest.json`, in git's own error text, in
+  `test_connection`, in the CLI output and in the progress log. The stored config
+  keeps the full URL, because push needs it.
+- **One backup or restore at a time**: the web handlers claim an atomic slot
+  *before* spawning the worker. Previously the running flag was set inside the
+  thread, so a double click started two runs against the same staging directory.
+  The CLI honours the same slot.
+- **Web-chat exports are redacted**: transcripts are copied into the backup only
+  after `redact()`, so a pasted API key or cookie no longer leaves the machine.
+  Splitting happens after redaction, never inside a secret.
+- **Stale files disappear from the backup**: sessions removed with `forget` are
+  pruned from `sessions/<tool>/`, and a re-export deletes the previous
+  `<name>.json` and its `.partNNN` pieces first, so a restore can never
+  recombine a stale tail onto a new head. Parts are numbered `.part000` and the
+  recombine scripts match.
+- **Backup README** reports the tools actually present in this export instead of
+  a hardcoded provider count, and the connection test says «Доступ к репозиторию
+  подтвержден (убедитесь, что репозиторий приватный)».
 
 ## [1.2.1] - 2026-10-31 (WikiAgents)
 

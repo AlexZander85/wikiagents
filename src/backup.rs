@@ -6,8 +6,7 @@ use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
-use std::fs::{self, File};
-use std::io::{Read, Write};
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -97,6 +96,53 @@ pub fn is_running() -> bool {
         .is_running
 }
 
+/// Backup and restore share one staging directory, so only one of them may run
+/// at a time. Checked here, before a worker thread exists: the progress flag is
+/// set inside the thread, which left a window where two clicks both passed the
+/// `is_running()` test.
+static RUNNING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Claim the single slot. A `false` answer means a run is already in progress
+/// and the caller must start nothing.
+pub fn try_begin() -> bool {
+    RUNNING
+        .compare_exchange(
+            false,
+            true,
+            std::sync::atomic::Ordering::SeqCst,
+            std::sync::atomic::Ordering::SeqCst,
+        )
+        .is_ok()
+}
+
+/// Releases the slot claimed by [`try_begin`] when dropped, so a panic or an
+/// early `?` inside a run cannot wedge backups forever.
+#[derive(Debug)]
+pub struct RunningGuard;
+
+impl Drop for RunningGuard {
+    fn drop(&mut self) {
+        RUNNING.store(false, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+/// `https://user:token@host/repo.git` puts the credential in the URL itself, and
+/// that URL is echoed into manifest.json and into git's own error text. Keep the
+/// address, drop the secret. The stored config keeps the full URL: push needs it.
+pub fn strip_url_credentials(url: &str) -> String {
+    let Some(scheme_end) = url.find("://") else {
+        return url.to_string();
+    };
+    let after = &url[scheme_end + 3..];
+    // Credentials only ever appear in the authority section, which ends at the
+    // first `/`, `?` or `#`.
+    let authority_end = after.find(['/', '?', '#']).unwrap_or(after.len());
+    let Some(at) = after[..authority_end].rfind('@') else {
+        return url.to_string();
+    };
+    format!("{}{}", &url[..scheme_end + 3], &after[at + 1..])
+}
+
 pub fn set_progress<F>(f: F)
 where
     F: FnOnce(&mut BackupProgress),
@@ -182,13 +228,15 @@ pub fn test_connection(repo_url: &str) -> ConnectionTestResult {
     match new_git_cmd().args(["ls-remote", repo_url.trim()]).output() {
         Ok(output) if output.status.success() => ConnectionTestResult {
             ok: true,
-            message: "Подключение успешно! Доступ к приватному репозиторию подтвержден."
+            message: "Подключение успешно! Доступ к репозиторию подтвержден \
+                      (убедитесь, что репозиторий приватный)"
                 .to_string(),
             git_version,
             git_user,
         },
         Ok(output) => {
-            let err = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            let raw_err = String::from_utf8_lossy(&output.stderr);
+            let err = strip_url_credentials(raw_err.trim());
             let msg = if err.is_empty() {
                 format!("Ошибка проверки доступа (код {})", output.status)
             } else {
@@ -344,22 +392,9 @@ pub fn run_backup(conn: &Connection, repo_url: &str) -> Result<BackupReport> {
             run_git_cmd(&backup_dir, &["commit", "-m", &commit_msg])?;
             commit_hash = Some(run_git_cmd(&backup_dir, &["rev-parse", "--short", "HEAD"])?);
 
-            // Push to origin main with retries and force fallback if history diverged
-            let mut push_res = run_git_cmd(&backup_dir, &["push", "-u", "origin", "main"]);
-            if push_res.is_err() {
-                push_res = run_git_cmd(&backup_dir, &["push", "-u", "origin", "main", "--force"]);
-                if push_res.is_err() {
-                    for attempt in 1..=3 {
-                        std::thread::sleep(std::time::Duration::from_secs(2 * attempt));
-                        push_res =
-                            run_git_cmd(&backup_dir, &["push", "-u", "origin", "main", "--force"]);
-                        if push_res.is_ok() {
-                            break;
-                        }
-                    }
-                }
-            }
-            push_res?;
+            // Push to origin main, integrating anything the other machine
+            // already sent rather than overwriting it.
+            push_integrating(&backup_dir)?;
             format!(
                 "Успешно выгружено в GitHub! Коммит: {}, выгружено сессий: {} (всего: {})",
                 commit_hash.as_deref().unwrap_or(""),
@@ -530,11 +565,49 @@ fn run_git_cmd(dir: &Path, args: &[&str]) -> Result<String> {
         .with_context(|| format!("failed to execute git {}", args.join(" ")))?;
 
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("git {} failed: {}", args.join(" "), stderr.trim());
+        // git echoes the remote URL in its failures, and that URL can carry the
+        // token: never let it reach a log line or the UI.
+        let raw_stderr = String::from_utf8_lossy(&output.stderr);
+        let stderr = crate::redact::redact(&raw_stderr);
+        anyhow::bail!(
+            "git {} failed: {}",
+            args.join(" "),
+            strip_url_credentials(stderr.trim())
+        );
     }
 
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+/// Push `main` without ever rewriting remote history. A rejected push means
+/// another machine got there first, so its commits are pulled in under ours and
+/// the push retried; a real conflict is reported, not resolved silently.
+fn push_integrating(dir: &Path) -> Result<()> {
+    if run_git_cmd(dir, &["push", "-u", "origin", "main"]).is_ok() {
+        return Ok(());
+    }
+    let mut last = String::from("git push origin main failed");
+    for attempt in 1..=3 {
+        std::thread::sleep(std::time::Duration::from_secs(2 * attempt));
+        run_git_cmd(dir, &["fetch", "origin", "main"])?;
+        if let Err(e) = run_git_cmd(dir, &["rebase", "origin/main"]) {
+            // Leave the staging tree where the user can see and fix it.
+            let _ = run_git_cmd(dir, &["rebase", "--abort"]);
+            return Err(e.context(
+                "удалённый репозиторий содержит изменения, которые не удаётся \
+                 совместить автоматически; выполните restore или разрешите \
+                 конфликт вручную",
+            ));
+        }
+        match run_git_cmd(dir, &["push", "-u", "origin", "main"]) {
+            Ok(_) => return Ok(()),
+            Err(e) => last = e.to_string(),
+        }
+    }
+    anyhow::bail!(
+        "удалённый репозиторий содержит изменения с другой машины; \
+         выполните restore или разрешите вручную ({last})"
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -672,14 +745,7 @@ fn export_web_session_files(dest_dir: &Path) -> Result<usize> {
             }
 
             let file_name = path.file_name().unwrap().to_string_lossy().to_string();
-            let size = fs::metadata(&path)?.len();
-
-            if size > MAX_CHUNK_BYTES {
-                // Split into chunks <= MAX_CHUNK_BYTES so GitHub will never reject it
-                split_file(&path, dest_dir, &file_name)?;
-            } else {
-                fs::copy(&path, dest_dir.join(&file_name))?;
-            }
+            export_one_web_session(&path, dest_dir, &file_name)?;
             copied_files.push(file_name);
         }
     }
@@ -690,35 +756,65 @@ fn export_web_session_files(dest_dir: &Path) -> Result<usize> {
     Ok(copied_files.len())
 }
 
-fn split_file(src_path: &Path, dest_dir: &Path, base_name: &str) -> Result<usize> {
-    let mut src = File::open(src_path)?;
-    let mut buf = vec![0u8; MAX_CHUNK_BYTES as usize];
-    let mut chunk_idx = 0;
+/// Copy one web-chat transcript into the backup with secrets removed. These
+/// files leave the machine, and a pasted API key or cookie stays in them. The
+/// markers `[redacted:kind]` hold no quotes, so the JSON stays parseable.
+fn export_one_web_session(path: &Path, dest_dir: &Path, file_name: &str) -> Result<()> {
+    let raw = fs::read(path)?;
+    let text = String::from_utf8_lossy(&raw);
+    let redacted = crate::redact::redact(&text);
+    let bytes = redacted.as_bytes();
+    if bytes.len() as u64 > MAX_CHUNK_BYTES {
+        // Redact first, then split: a chunk boundary must never fall inside a
+        // secret, and a reassembled file must never contain the original.
+        split_bytes(bytes, dest_dir, file_name)?;
+    } else {
+        remove_derived_names(dest_dir, file_name)?;
+        fs::write(dest_dir.join(file_name), bytes)?;
+    }
+    Ok(())
+}
 
-    loop {
-        let n = src.read(&mut buf)?;
-        if n == 0 {
-            break;
-        }
-        let chunk_name = format!("{}.part{:02}", base_name, chunk_idx);
-        let mut out = File::create(dest_dir.join(&chunk_name))?;
-        out.write_all(&buf[..n])?;
+/// Split a too-big export into parts GitHub accepts. Anything the previous run
+/// left under this name - whole file or parts with a different count - goes
+/// first, or the restore would recombine a stale tail onto the new head.
+fn split_bytes(data: &[u8], dest_dir: &Path, base_name: &str) -> Result<usize> {
+    remove_derived_names(dest_dir, base_name)?;
+    let mut chunk_idx = 0;
+    for chunk in data.chunks(MAX_CHUNK_BYTES as usize) {
+        let chunk_name = format!("{}.part{:03}", base_name, chunk_idx);
+        fs::write(dest_dir.join(&chunk_name), chunk)?;
         chunk_idx += 1;
     }
-
     Ok(chunk_idx)
 }
 
+/// Remove `<name>` and every `<name>.partNNN` in `dest_dir`.
+fn remove_derived_names(dest_dir: &Path, base_name: &str) -> Result<()> {
+    let _ = fs::remove_file(dest_dir.join(base_name));
+    let prefix = format!("{base_name}.part");
+    let entries = match fs::read_dir(dest_dir) {
+        Ok(e) => e,
+        Err(_) => return Ok(()),
+    };
+    for entry in entries.flatten() {
+        if entry.file_name().to_string_lossy().starts_with(&prefix) {
+            let _ = fs::remove_file(entry.path());
+        }
+    }
+    Ok(())
+}
+
 fn write_recombine_helpers(dest_dir: &Path) -> Result<()> {
-    // Python script to recombine any .partXX files in the directory
+    // Python script to recombine any .partNNN files in the directory
     let py_script = r#"#!/usr/bin/env python3
-"""Recombines split .partXX files into their original full-size files."""
+"""Recombines split .partNNN files into their original full-size files."""
 import os, glob, re
 
 def recombine():
-    parts = glob.glob("*.part00")
+    parts = glob.glob("*.part000")
     for first_part in parts:
-        base_name = first_part[:-7]
+        base_name = first_part[:-8]
         part_files = sorted(glob.glob(f"{base_name}.part*"))
         print(f"Recombining {len(part_files)} parts into {base_name}...")
         with open(base_name, "wb") as out:
@@ -733,9 +829,9 @@ if __name__ == "__main__":
     fs::write(dest_dir.join("recombine.py"), py_script)?;
 
     // PowerShell script to do the same on Windows
-    let ps_script = r#"# Recombines split .partXX files into their original full-size files
-Get-ChildItem -Filter "*.part00" | ForEach-Object {
-    $baseName = $_.Name.Substring(0, $_.Name.Length - 7)
+    let ps_script = r#"# Recombines split .partNNN files into their original full-size files
+Get-ChildItem -Filter "*.part000" | ForEach-Object {
+    $baseName = $_.Name.Substring(0, $_.Name.Length - 8)
     $parts = Get-ChildItem -Filter "$baseName.part*" | Sort-Object Name
     Write-Host "Recombining $($parts.Count) parts into $baseName..."
     $out = [System.IO.File]::Create((Join-Path $PSScriptRoot $baseName))
@@ -820,6 +916,8 @@ fn export_granular_sessions(conn: &Connection, dest_dir: &Path) -> Result<(usize
 
     let total = rows.len();
     let mut newly_written = 0;
+    // Every path this run accounts for, written or skipped as already current.
+    let mut keep: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
 
     let mut msg_stmt = conn.prepare(
         "SELECT role, text, full_text, is_rewound FROM messages WHERE session_id = ?1 ORDER BY id",
@@ -835,6 +933,7 @@ fn export_granular_sessions(conn: &Connection, dest_dir: &Path) -> Result<(usize
         fs::create_dir_all(&tool_dir)?;
 
         let dest_file = tool_dir.join(format!("{id_safe}.json"));
+        keep.insert(dest_file.clone());
 
         let row_mtime_sec = if row.mtime > 100_000_000_000 {
             row.mtime / 1000
@@ -910,6 +1009,25 @@ fn export_granular_sessions(conn: &Connection, dest_dir: &Path) -> Result<(usize
 
         fs::write(&dest_file, serde_json::to_string_pretty(&session_data)?)?;
         newly_written += 1;
+    }
+
+    // A session forgotten locally must not outlive that in the backup: the next
+    // restore would hand it straight back.
+    let entries = fs::read_dir(&sessions_dir)?;
+    for tool_dir in entries.flatten() {
+        let tool_path = tool_dir.path();
+        if !tool_path.is_dir() {
+            continue;
+        }
+        let Ok(files) = fs::read_dir(&tool_path) else {
+            continue;
+        };
+        for file in files.flatten() {
+            let p = file.path();
+            if p.extension().and_then(|s| s.to_str()) == Some("json") && !keep.contains(&p) {
+                let _ = fs::remove_file(&p);
+            }
+        }
     }
 
     Ok((total, newly_written))
@@ -1315,7 +1433,8 @@ fn write_manifest_and_readme(
     let manifest = json!({
         "wikiagents_version": env!("CARGO_PKG_VERSION"),
         "created_at": now,
-        "repo_url": repo_url,
+        // Never the credential: this file is committed to the remote.
+        "repo_url": strip_url_credentials(repo_url),
         "total_sessions": total_sessions,
         "sessions_by_tool": stats,
     });
@@ -1338,7 +1457,10 @@ fn write_manifest_and_readme(
         env!("CARGO_PKG_VERSION")
     ));
 
-    md.push_str("## 📊 Статистика по инструментам (все 18 провайдеров)\n\n");
+    md.push_str(&format!(
+        "## 📊 Статистика по инструментам ({} в этом бэкапе)\n\n",
+        stats.len()
+    ));
     md.push_str("| Инструмент (Tool) | Количество сессий |\n");
     md.push_str("|---|---:|\n");
     for (tool, count) in stats {
@@ -1429,5 +1551,95 @@ mod tests {
         let res = test_connection("");
         assert!(!res.ok);
         assert!(res.message.contains("не указан"));
+    }
+
+    #[test]
+    fn strip_url_credentials_keeps_the_address_drops_the_secret() {
+        assert_eq!(
+            strip_url_credentials("https://user:ghp_secret@github.com/me/repo.git"),
+            "https://github.com/me/repo.git"
+        );
+        // token without a username, and a path that itself contains an '@'
+        assert_eq!(
+            strip_url_credentials("https://tok@github.com/me/repo.git"),
+            "https://github.com/me/repo.git"
+        );
+        assert_eq!(
+            strip_url_credentials("https://tok@github.com/me/repo@2.git"),
+            "https://github.com/me/repo@2.git"
+        );
+        // Nothing to strip stays byte-identical, including ssh scp-style URLs
+        // where the '@' is the account, not a credential we invented.
+        assert_eq!(
+            strip_url_credentials("https://github.com/me/repo.git"),
+            "https://github.com/me/repo.git"
+        );
+        assert_eq!(
+            strip_url_credentials("git@github.com:me/repo.git"),
+            "git@github.com:me/repo.git"
+        );
+        assert_eq!(strip_url_credentials(""), "");
+    }
+
+    #[test]
+    fn web_session_export_redacts_secrets_and_stays_valid_json() {
+        let dir = tempfile::tempdir().unwrap();
+        let src_dir = dir.path().join("src");
+        let out_dir = dir.path().join("out");
+        fs::create_dir_all(&src_dir).unwrap();
+        fs::create_dir_all(&out_dir).unwrap();
+
+        let secret = "sk-abcdefghijklmnopqrstuvwxyz012345";
+        let src = src_dir.join("chat.json");
+        fs::write(
+            &src,
+            format!(r#"{{"id":"c1","messages":[{{"role":"user","text":"key {secret} here"}}]}}"#),
+        )
+        .unwrap();
+
+        assert!(export_one_web_session(&src, &out_dir, "chat.json").is_ok());
+        let written = fs::read_to_string(out_dir.join("chat.json")).unwrap();
+        assert!(!written.contains(secret), "secret leaked into the backup");
+        assert!(
+            written.contains("[redacted:openai]"),
+            "marker missing: {written}"
+        );
+        // The markers hold no quotes, so the transcript must still parse.
+        let parsed: serde_json::Value = serde_json::from_str(&written).unwrap();
+        assert_eq!(parsed["id"], "c1");
+    }
+
+    #[test]
+    fn derived_names_are_removed_before_a_rewrite() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("big.json"), "old whole file").unwrap();
+        fs::write(dir.path().join("big.json.part000"), "old head").unwrap();
+        fs::write(dir.path().join("big.json.part001"), "old tail").unwrap();
+        fs::write(dir.path().join("other.json.part000"), "keep").unwrap();
+
+        remove_derived_names(dir.path(), "big.json").unwrap();
+
+        assert!(!dir.path().join("big.json").exists());
+        assert!(!dir.path().join("big.json.part000").exists());
+        assert!(!dir.path().join("big.json.part001").exists());
+        assert!(dir.path().join("other.json.part000").exists());
+    }
+
+    #[test]
+    fn only_one_backup_run_may_hold_the_slot() {
+        // Serial by construction: the second claim must fail while the guard is
+        // alive, no matter which thread got here first.
+        let guard_claimed = try_begin();
+        assert!(
+            guard_claimed,
+            "slot should be free at the start of the test"
+        );
+        assert!(
+            !try_begin(),
+            "a second run must not start while one is active"
+        );
+        drop(RunningGuard);
+        assert!(try_begin(), "the slot is released when the guard drops");
+        drop(RunningGuard);
     }
 }

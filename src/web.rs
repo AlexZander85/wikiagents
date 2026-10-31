@@ -1533,7 +1533,9 @@ fn api_backup_run(conn: &Connection, req: &mut tiny_http::Request, query: &str) 
         }
     };
 
-    if crate::backup::is_running() {
+    // Claim the slot here, not in the worker: the progress flag is only set
+    // inside the thread, so an is_running() check let two clicks both start.
+    if !crate::backup::try_begin() {
         return json_response(json!({
             "ok": true,
             "started": true,
@@ -1541,9 +1543,12 @@ fn api_backup_run(conn: &Connection, req: &mut tiny_http::Request, query: &str) 
             "progress": crate::backup::get_progress(),
         }));
     }
+    let guard = crate::backup::RunningGuard;
 
     let repo_url_clone = repo_url.clone();
     std::thread::spawn(move || {
+        // Releasing happens on any exit path, including an early return below.
+        let _guard = guard;
         let db_p = match crate::index::db_path() {
             Ok(p) => p,
             Err(e) => {
@@ -1592,7 +1597,9 @@ fn api_backup_restore(
         }
     };
 
-    if crate::backup::is_running() {
+    // Claim the slot before spawning: the twin of the run-handler bug, where
+    // the flag was only set inside the thread and both clicks got through.
+    if !crate::backup::try_begin() {
         return json_response(json!({
             "ok": true,
             "started": true,
@@ -1601,8 +1608,11 @@ fn api_backup_restore(
         }));
     }
 
+    let guard = crate::backup::RunningGuard;
     let repo_url_clone = repo_url.clone();
     std::thread::spawn(move || {
+        // Dropped on every exit path, including the two early returns below.
+        let _guard = guard;
         let db_p = match crate::index::db_path() {
             Ok(p) => p,
             Err(e) => {

@@ -2272,7 +2272,10 @@ pub fn backup_cmd(
 
     if let Some(r) = repo {
         crate::backup::set_backup_config(&conn, r)?;
-        println!("Repository URL saved: {}", r);
+        println!(
+            "Repository URL saved: {}",
+            crate::backup::strip_url_credentials(r)
+        );
         if !push && !status && !restore {
             return Ok(());
         }
@@ -2292,7 +2295,16 @@ pub fn backup_cmd(
                 "Repository URL not configured. Run: wikiagents backup --repo <url> --restore"
             );
         }
-        println!("Starting database restore from {}...", repo_url);
+        println!(
+            "Starting database restore from {}...",
+            crate::backup::strip_url_credentials(&repo_url)
+        );
+        // Same single slot the WebUI workers use: restore and backup share one
+        // staging directory, so a concurrent run would corrupt both.
+        if !crate::backup::try_begin() {
+            anyhow::bail!("A backup or restore is already running. Wait for it to finish.");
+        }
+        let _guard = crate::backup::RunningGuard;
         let count = crate::backup::run_restore(&mut conn, &repo_url)?;
         println!("✓ Restore successful! Total sessions restored: {}", count);
         return Ok(());
@@ -2304,9 +2316,9 @@ pub fn backup_cmd(
         println!(
             "  Repository: {}",
             if cfg.repo_url.is_empty() {
-                "Not configured"
+                "Not configured".to_string()
             } else {
-                &cfg.repo_url
+                crate::backup::strip_url_credentials(&cfg.repo_url)
             }
         );
         if let Some(ts) = cfg.last_backup_at {
@@ -2331,7 +2343,14 @@ pub fn backup_cmd(
                 "Repository URL not configured. Run: wikiagents backup --repo <url> --push"
             );
         }
-        println!("Starting backup to {}...", cfg.repo_url);
+        println!(
+            "Starting backup to {}...",
+            crate::backup::strip_url_credentials(&cfg.repo_url)
+        );
+        if !crate::backup::try_begin() {
+            anyhow::bail!("A backup or restore is already running. Wait for it to finish.");
+        }
+        let _guard = crate::backup::RunningGuard;
         let report = crate::backup::run_backup(&conn, &cfg.repo_url)?;
         println!("✓ {}", report.message);
         if let Some(commit) = report.commit_hash {
