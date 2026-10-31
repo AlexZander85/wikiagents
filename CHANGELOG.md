@@ -1,5 +1,27 @@
 # Changelog
 
+## [1.3.0] - 2026-11-01 (WikiAgents)
+
+Review fixes for 1.0→1.2.1 plus the features that followed from them. Work in
+progress on the `fix/review-1.3` branch; this section grows as each phase lands.
+
+### Security
+- **Web API now proves the caller is our own UI**: every `/api/*` request must carry
+  the `X-WikiAgents: 1` header. A cross-site page cannot set it — `<img src>`, a form
+  post and top-level navigation send no custom headers, and a cross-origin `fetch`
+  that tries is stopped by a CORS preflight the server never answers. Before this, a
+  malicious page could read the whole index or trigger an export through
+  `/api/backup/run`.
+- **State-changing endpoints accept POST only**: `/api/backup/run`,
+  `/api/backup/restore`, `/api/backup/config`, `/api/forget` and
+  `/api/snippet/save|delete|rename` answer 405 to any other method.
+
+### Fixed
+- **CI is green again**: `cargo fmt`, all 45 `cargo clippy -D warnings` errors, and
+  the `account_badge` trace test that still expected the pre-1.2.1 absolute-path
+  match. A failing test no longer takes the rest of its file down with it: every
+  shared `static Mutex` lock tolerates a poisoned lock.
+
 ## [1.2.1] - 2026-10-31 (WikiAgents)
 
 ### Fixed & Enhanced
