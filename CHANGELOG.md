@@ -80,6 +80,26 @@ progress on the `fix/review-1.3` branch; this section grows as each phase lands.
   search, the no-duplication guarantee and the newer-note-wins merge, without
   invoking git.
 
+### Changed
+- **Parser version per tool**: `files.reader` now records the version of *that
+  tool's* parser (`adapters::reader_version`), and the first index open after a
+  bump marks only the live rows whose tool moved on — once, because the applied
+  versions are kept in `meta` as `reader_versions_applied`. Raise one tool in
+  `READER_OVERRIDES` to re-read its sessions alone; raise `index::READER` to
+  re-read them all.
+- **1.3 raises every tool from 1 to 2**, so two fixes shipped in 1.2.x finally
+  reach sessions indexed before them: commit extraction (`session_commits`) and
+  thinking blocks in web-chat transcripts. The first `wikiagents sync` after
+  upgrading re-parses every session — expected, and it takes a few minutes.
+- **The `session_commits` backfill scan is gone**: `open()` no longer calls
+  `backfill_session_commits_if_needed`, because the version sweep makes every
+  session pass through the real extractor. The old sweep scanned messages with
+  `LIKE '%commit %'`, which is also where the false «mentioned a commit»
+  authorships came from.
+- New integration test `tests/reader_version_sweep.rs` covers a stale row being
+  marked, a current row and an archived row being left alone, the mark being
+  written once, and every tool sitting at the current version.
+
 ## [1.2.1] - 2026-10-31 (WikiAgents)
 
 ### Fixed & Enhanced

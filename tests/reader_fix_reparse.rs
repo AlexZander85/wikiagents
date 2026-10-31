@@ -4,6 +4,10 @@
 //! `/rewind` records; the first open after upgrading marks exactly the rows
 //! those readers produce - Codex history threads and Gemini chats - until
 //! this version has parsed them.
+//!
+//! 1.3 added a second sweep that marks whole tools by `reader`, so the rows
+//! that must survive it are stamped with the current version, like a parse by
+//! this build would.
 
 use rusqlite::{params, Connection};
 use sessionwiki::index;
@@ -24,17 +28,19 @@ fn rows_of_a_fixed_reader_are_reparsed_once_after_upgrading() {
 
     let conn = index::open().unwrap();
     let history = "/h/thread_history_1.sqlite\u{1f}019a0000";
-    for (path, tool, archived) in [
-        (history, "codex", false),
-        ("/s/rollout.jsonl", "codex", false),
-        ("/g/chats/session-a.jsonl", "gemini", false),
-        ("/g/chats/session-gone.json", "gemini", true),
-        ("/c/claude.jsonl", "claude-code", false),
+    for (path, tool, archived, reader) in [
+        (history, "codex", false, 0),
+        ("/s/rollout.jsonl", "codex", false, index::READER),
+        ("/g/chats/session-a.jsonl", "gemini", false, 0),
+        ("/g/chats/session-gone.json", "gemini", true, 0),
+        ("/c/claude.jsonl", "claude-code", false, index::READER),
     ] {
+        // `reader` is the version that parsed the row; the two rows already at
+        // this build's version stand in for sessions the current reader wrote.
         conn.execute(
-            "INSERT INTO files(path, mtime, size, session_id, tool, project, title, started, ended, msg_count, kind, archived_at)
-             VALUES (?1, 5, 5, ?1, ?2, '/p', 't', '2026-10-01T00:00:00+00:00', NULL, 1, 'main', ?3)",
-            params![path, tool, archived.then_some("2026-10-02T00:00:00+00:00")],
+            "INSERT INTO files(path, mtime, size, session_id, tool, project, title, started, ended, msg_count, kind, archived_at, reader)
+             VALUES (?1, 5, 5, ?1, ?2, '/p', 't', '2026-10-01T00:00:00+00:00', NULL, 1, 'main', ?3, ?4)",
+            params![path, tool, archived.then_some("2026-10-02T00:00:00+00:00"), reader],
         )
         .unwrap();
     }

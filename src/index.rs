@@ -948,7 +948,7 @@ pub fn open() -> Result<Connection> {
     reparse_codex_for_mcp_errors(&conn)?;
     reparse_large_for_provenance(&conn)?;
     reparse_after_reader_fixes(&conn)?;
-    backfill_session_commits_if_needed(&conn)?;
+    reparse_stale_reader_versions(&conn)?;
     Ok(conn)
 }
 
@@ -982,10 +982,11 @@ fn unchecked_rowids(conn: &Connection, key: &str) -> Result<(i64, i64)> {
 /// Apply a fix-up's writes and advance its mark, but only if the write lock is
 /// free right now. Opening the index must never wait on a writer (a sync can
 /// hold it for minutes); a busy index is fixed by a later open instead.
+/// `value` is what the mark key stores - a rowid, a version, or JSON.
 fn apply_without_waiting(
     conn: &Connection,
     key: &str,
-    top: i64,
+    value: &str,
     updates: &[(&str, Vec<String>)],
 ) -> Result<()> {
     conn.busy_timeout(std::time::Duration::ZERO)?;
@@ -997,7 +998,7 @@ fn apply_without_waiting(
         }
         tx.execute(
             "INSERT OR REPLACE INTO meta(key, value) VALUES (?1, ?2)",
-            params![key, top.to_string()],
+            params![key, value],
         )?;
         tx.commit()
     })();
@@ -1051,7 +1052,7 @@ fn reclassify_codex_subagents(conn: &Connection) -> Result<()> {
             ));
         }
     }
-    apply_without_waiting(conn, KEY, top, &updates)
+    apply_without_waiting(conn, KEY, &top.to_string(), &updates)
 }
 
 /// Replace the store-dir slug that Gemini rows indexed by an older version
@@ -1083,7 +1084,7 @@ fn resolve_gemini_projects(conn: &Connection) -> Result<()> {
             ));
         }
     }
-    apply_without_waiting(conn, KEY, top, &updates)
+    apply_without_waiting(conn, KEY, &top.to_string(), &updates)
 }
 
 /// Codex rows parsed by an older Codex reader stay as it left them, since a
@@ -1108,12 +1109,53 @@ fn reparse_codex_for_mcp_errors(conn: &Connection) -> Result<()> {
     apply_without_waiting(
         conn,
         KEY,
-        READER,
+        &READER.to_string(),
         &[(
             "UPDATE files SET mtime = -1, size = -1 WHERE tool = 'codex' AND archived_at IS NULL",
             vec![],
         )],
     )
+}
+
+/// Mark every live row a stale reader produced for a re-parse, tool by tool.
+/// `reader_version` is per tool, so a fix to one parser re-reads only that
+/// tool's sessions. The meta value records the versions already swept, so a
+/// normal open runs one query instead of one UPDATE per tool, and the next
+/// raise of a version sweeps again. Rows a pre-1.3 `sessionwiki mcp` still
+/// running rewrites after the sweep keep an old `reader`; the next bump marks
+/// them, since the sweep's stored version is then behind again.
+///
+/// Rows that never got a `reader` (0) are swept too: they predate the column,
+/// which is exactly when they need today's parser.
+fn reparse_stale_reader_versions(conn: &Connection) -> Result<()> {
+    const KEY: &str = "reader_versions_applied";
+    let stored: String = conn
+        .query_row("SELECT value FROM meta WHERE key = ?1", [KEY], |r| {
+            r.get::<_, String>(0)
+        })
+        .optional()?
+        .unwrap_or_default();
+    // A value this build cannot read (or an empty one) means "never swept".
+    let mut applied: std::collections::BTreeMap<String, i64> =
+        serde_json::from_str(&stored).unwrap_or_default();
+    let mut updates = Vec::new();
+    for tool in crate::adapters::tool_names() {
+        let want = crate::adapters::reader_version(tool);
+        if applied.get(tool).copied().unwrap_or(0) >= want {
+            continue;
+        }
+        applied.insert(tool.to_string(), want);
+        updates.push((
+            "UPDATE files SET mtime = -1, size = -1
+             WHERE archived_at IS NULL AND tool = ?1 AND reader < CAST(?2 AS INTEGER)",
+            vec![tool.to_string(), want.to_string()],
+        ));
+    }
+    if updates.is_empty() {
+        return Ok(());
+    }
+    let value = serde_json::to_string(&applied)?;
+    apply_without_waiting(conn, KEY, &value, &updates)
 }
 
 /// Sessions over the byte cap were indexed without the files they edited
@@ -1124,7 +1166,12 @@ fn reparse_codex_for_mcp_errors(conn: &Connection) -> Result<()> {
 /// records no longer fill the middle's budget ahead of the conversation.
 /// Stamped on every `files` row this version parses. Raise it with each reader
 /// fix listed in `reparse_after_reader_fixes`.
-pub const READER: i64 = 1;
+///
+/// 1.3: commit extraction (shipped in 1.2.0) reaches sessions indexed before
+/// it, and web-chat transcripts keep thinking blocks. `adapters::reader_version`
+/// reads this as the default, so raising it re-parses every tool at once; add an
+/// override there to re-parse one tool alone.
+pub const READER: i64 = 2;
 
 /// Mark the live rows a fixed reader produces for a re-parse, so the fix
 /// reaches sessions that never change again. Each fix names its rows and the
@@ -1142,7 +1189,7 @@ fn reparse_after_reader_fixes(conn: &Connection) -> Result<()> {
     apply_without_waiting(
         conn,
         "reader_fixes_marked",
-        READER,
+        &READER.to_string(),
         &[(
             "UPDATE files SET mtime = -1, size = -1
              WHERE archived_at IS NULL AND mtime != -1 AND reader < 1
@@ -1168,7 +1215,7 @@ fn reparse_large_for_provenance(conn: &Connection) -> Result<()> {
     apply_without_waiting(
         conn,
         KEY,
-        READER,
+        &READER.to_string(),
         &[(
             "UPDATE files SET mtime = -1, size = -1
              WHERE tool IN ('claude-code', 'codex') AND title LIKE '[large]%'
@@ -1205,7 +1252,7 @@ fn respell_projects(conn: &Connection) -> Result<()> {
             ));
         }
     }
-    apply_without_waiting(conn, KEY, top, &updates)
+    apply_without_waiting(conn, KEY, &top.to_string(), &updates)
 }
 
 /// After a schema bump drops the cache tables, replay archived sessions back
@@ -1385,7 +1432,9 @@ fn index_one(
             session.messages.len() as i64,
             if session.subagent { "sub" } else { "main" },
             session.parent_id.as_deref(),
-            READER,
+            // The tool's own parser version, so one tool's fix re-parses only
+            // that tool's rows (see adapters::reader_version).
+            crate::adapters::reader_version(session.tool),
         ],
     )?;
     fold_moved_copy(tx, session, key)?;
@@ -4253,51 +4302,6 @@ pub fn get_session_commits(conn: &Connection, session_id: &str) -> Result<Vec<Se
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(rows)
-}
-
-/// Check and perform a one-time backfill if `session_commits` is empty while `messages` has rows.
-pub fn backfill_session_commits_if_needed(conn: &Connection) -> Result<usize> {
-    let count: i64 = conn
-        .query_row("SELECT count(*) FROM session_commits", [], |r| r.get(0))
-        .unwrap_or(0);
-    if count > 0 {
-        return Ok(0);
-    }
-    let msg_count: i64 = conn
-        .query_row("SELECT count(*) FROM messages", [], |r| r.get(0))
-        .unwrap_or(0);
-    if msg_count == 0 {
-        return Ok(0);
-    }
-    backfill_session_commits(conn)
-}
-
-/// Run backfill of `session_commits` from indexed `messages`.
-pub fn backfill_session_commits(conn: &Connection) -> Result<usize> {
-    let mut stmt = conn.prepare(
-        "SELECT session_id, text, full_text FROM messages 
-         WHERE text LIKE '%[%' OR text LIKE '%/commit/%' OR text LIKE '%commit %'
-            OR full_text LIKE '%[%' OR full_text LIKE '%/commit/%' OR full_text LIKE '%commit %'",
-    )?;
-    let mut rows = stmt.query([])?;
-    let mut ins = conn.prepare_cached(
-        "INSERT OR IGNORE INTO session_commits(session_id, commit_sha, message, timestamp) VALUES (?1, ?2, ?3, ?4)",
-    )?;
-    let mut inserted = 0usize;
-    while let Some(row) = rows.next()? {
-        let sid: String = row.get(0)?;
-        let text: String = row.get(1)?;
-        let full_text: Option<String> = row.get(2)?;
-        let mut commits = extract_commits_from_text(&text);
-        if let Some(ft) = full_text {
-            commits.extend(extract_commits_from_text(&ft));
-        }
-        for (sha, msg) in commits {
-            ins.execute(params![sid, sha, msg, None::<i64>])?;
-            inserted += 1;
-        }
-    }
-    Ok(inserted)
 }
 
 // --- archive: serving and forgetting sessions whose originals are gone ---

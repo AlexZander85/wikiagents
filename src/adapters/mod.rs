@@ -228,6 +228,38 @@ pub fn named(name: &str) -> Vec<Box<dyn Adapter>> {
     all().into_iter().filter(|a| a.name() == name).collect()
 }
 
+/// The tool slugs this build can index, deduplicated (several adapters share
+/// one slug) and sorted so a version sweep visits them in a stable order.
+pub fn tool_names() -> Vec<&'static str> {
+    let mut names: std::collections::BTreeSet<&'static str> = std::collections::BTreeSet::new();
+    for adapter in all() {
+        names.insert(adapter.name());
+    }
+    names.into_iter().collect()
+}
+
+/// Per-tool overrides of the global reader version, as `(slug, version)`.
+/// Add a line here to re-parse ONE tool after a parser fix; everything not
+/// listed sits at the current version.
+const READER_OVERRIDES: &[(&str, i64)] = &[
+    // ("antigravity", 3),
+];
+
+/// The parser version whose rows a tool's sessions should have. Stamped into
+/// `files.reader` on index, and compared against it by
+/// `index::reparse_stale_reader_versions`.
+///
+/// History: 1 = the original global reader; 2 = 1.3, so commit extraction
+/// (shipped in 1.2.0) reaches sessions indexed before it, and web-chat
+/// transcripts pick up thinking blocks. Raise it whenever a parser changes -
+/// sessions that never change on disk are otherwise parsed exactly once.
+pub fn reader_version(tool: &str) -> i64 {
+    READER_OVERRIDES
+        .iter()
+        .find(|(slug, _)| *slug == tool)
+        .map_or(crate::index::READER, |(_, version)| *version)
+}
+
 /// Filesystem-only summary of a store, used by `scan`. No parsing involved.
 pub fn report(adapter: &dyn Adapter) -> Option<StoreReport> {
     let root = adapter.root()?;
