@@ -1108,10 +1108,16 @@ pub(crate) fn load_session(
     conn: &rusqlite::Connection,
     row: &index::SessionRow,
 ) -> Result<crate::model::Session> {
-    let path = std::path::Path::new(&row.path);
+    let mut path = std::path::PathBuf::from(&row.path);
+    if path.file_name().and_then(|n| n.to_str()) == Some("transcript.jsonl") {
+        let full = path.with_file_name("transcript_full.jsonl");
+        if full.is_file() {
+            path = full;
+        }
+    }
     if path.exists() {
         if let Some(adapter) = adapters::by_name(&row.tool) {
-            return adapters::parse_session(adapter.as_ref(), path);
+            return adapters::parse_session(adapter.as_ref(), &path);
         }
     }
     index::session_from_index(conn, row)

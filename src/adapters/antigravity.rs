@@ -232,7 +232,21 @@ impl Adapter for Antigravity {
     }
 
     fn parse(&self, path: &Path) -> Result<Session> {
-        let (lines, _windowed) = crate::util::session_lines_keeping(path, |line| {
+        let full_target;
+        let effective_path =
+            if path.file_name().and_then(|n| n.to_str()) == Some("transcript.jsonl") {
+                let full = path.with_file_name("transcript_full.jsonl");
+                if full.is_file() {
+                    full_target = full;
+                    &full_target
+                } else {
+                    path
+                }
+            } else {
+                path
+            };
+
+        let (lines, _windowed) = crate::util::session_lines_keeping(effective_path, |line| {
             line.contains("\"type\":\"USER_INPUT\"")
                 || line.contains("\"type\":\"PLANNER_RESPONSE\"")
         })?;

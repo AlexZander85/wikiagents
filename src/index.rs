@@ -2435,7 +2435,15 @@ fn archive_or_prune(
             .and_then(|native| listed_by_native.get(native))
             .filter(|live_sid| **live_sid != sid)
             .cloned();
-        if still_live.contains(&sid) {
+        let session_still_live = still_live.contains(&sid)
+            || conn
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM files WHERE session_id = ?1 AND path != ?2 AND archived_at IS NULL)",
+                    params![&sid, &path],
+                    |r| r.get::<_, bool>(0),
+                )
+                .unwrap_or(false);
+        if session_still_live {
             conn.execute("DELETE FROM files WHERE path = ?1", params![path])?;
         } else if let Some(current_sid) = moved_to {
             // The chat was re-exported into a newer file: drop this listing and
@@ -2474,6 +2482,11 @@ fn archive_or_prune(
             archived += 1;
         }
     }
+    // Prune any lingering archived rows whose session is now live at another path.
+    conn.execute(
+        "DELETE FROM files WHERE archived_at IS NOT NULL AND session_id IN (SELECT session_id FROM files WHERE archived_at IS NULL)",
+        [],
+    )?;
     Ok(archived)
 }
 
@@ -3691,11 +3704,19 @@ pub fn resolve(conn: &Connection, id_prefix: &str) -> Result<Vec<SessionRow>> {
 fn resolve_by_short_id(conn: &Connection, id_prefix: &str) -> Result<Vec<SessionRow>> {
     let mut stmt = conn.prepare(&format!(
         "SELECT {RESOLVE_COLS}, {SUMMARY_SQL}, {TAGS_SQL}, (archived_at IS NOT NULL)
-         FROM files f WHERE session_id LIKE ?1 ESCAPE '\\' LIMIT 10",
+         FROM files f WHERE session_id LIKE ?1 ESCAPE '\\'
+         ORDER BY (archived_at IS NOT NULL) ASC, rowid DESC LIMIT 10",
     ))?;
     let pattern = format!("{}%", escape_like(id_prefix));
     let rows = stmt.query_map(params![pattern], map_resolve_row)?;
-    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    let mut out: Vec<SessionRow> = Vec::new();
+    for row in rows {
+        let row = row?;
+        if out.iter().all(|r| r.session_id != row.session_id) {
+            out.push(row);
+        }
+    }
+    Ok(out)
 }
 
 /// Match rows whose native id (derived from the filename) starts with `prefix`.
@@ -3705,18 +3726,21 @@ fn resolve_by_short_id(conn: &Connection, id_prefix: &str) -> Result<Vec<Session
 fn resolve_by_native_id(conn: &Connection, prefix: &str) -> Result<Vec<SessionRow>> {
     let mut stmt = conn.prepare(&format!(
         "SELECT {RESOLVE_COLS}, {SUMMARY_SQL}, {TAGS_SQL}, (archived_at IS NOT NULL)
-         FROM files f WHERE path LIKE ?1 ESCAPE '\\' LIMIT 500",
+         FROM files f WHERE path LIKE ?1 ESCAPE '\\'
+         ORDER BY (archived_at IS NOT NULL) ASC, rowid DESC LIMIT 500",
     ))?;
     let pattern = format!("%{}%", escape_like(prefix));
     let want = prefix.to_ascii_lowercase();
     let rows = stmt.query_map(params![pattern], map_resolve_row)?;
-    let mut out = Vec::new();
+    let mut out: Vec<SessionRow> = Vec::new();
     for row in rows {
         let row = row?;
         if native_id_of(&row.path).is_some_and(|n| n.starts_with(&want)) {
-            out.push(row);
-            if out.len() >= 10 {
-                break;
+            if out.iter().all(|r| r.session_id != row.session_id) {
+                out.push(row);
+                if out.len() >= 10 {
+                    break;
+                }
             }
         }
     }
