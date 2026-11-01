@@ -48,6 +48,9 @@ ChatGPT exports, an instant desktop window, and the gaps found by checking 1.3.0
   of three targets sharing one.
 - **`wikiagents app` no longer panics at startup**: the window's event loop ran on
   the worker thread; it now runs on the main thread.
+- **Session commits no longer clutter the header**: commit pills are collapsed into
+  an accordion button `[▶ ⎇ Commits (N)]` in the action bar beside Files and Plan,
+  leaving the metadata chips line clean and one-line.
 - **A long sync is not reported as failed**: the UI's new 30-second request timeout
   does not apply to `/api/sync`.
 

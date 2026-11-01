@@ -848,7 +848,7 @@
     color: var(--ink);
     text-decoration: underline;
   }
-  .doc-head .chips .chip.chip-commit {
+  .doc-head .chip.chip-commit, .doc-head .chips .chip.chip-commit {
     background: rgba(35, 134, 54, 0.15);
     color: #3fb950;
     border: 1px solid rgba(63, 185, 80, 0.35);
@@ -859,7 +859,7 @@
     border-radius: 4px;
     transition: all 0.15s ease;
   }
-  .doc-head .chips .chip.chip-commit:hover {
+  .doc-head .chip.chip-commit:hover, .doc-head .chips .chip.chip-commit:hover {
     background: rgba(35, 134, 54, 0.3);
     border-color: #3fb950;
   }
@@ -1025,6 +1025,36 @@
   .doc-head details.head-detail .path-code:hover {
     color: var(--accent);
     border-color: var(--accent);
+  }
+  .doc-head details.head-detail .head-detail-body.commits-body {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .doc-head details.head-detail .commit-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12px;
+  }
+  .doc-head details.head-detail .commit-row .commit-msg {
+    color: var(--ink-2);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    flex: 1;
+  }
+  .doc-head details.head-detail .commit-row .commit-ext-link {
+    color: var(--ink-3);
+    text-decoration: none;
+    font-size: 13px;
+    padding: 0 4px;
+    border-radius: 3px;
+    transition: all 0.15s ease;
+  }
+  .doc-head details.head-detail .commit-row .commit-ext-link:hover {
+    color: var(--accent);
+    background: var(--bg-hover);
   }
   .doc-head details.head-detail .note-body {
     white-space: pre-wrap;
@@ -3390,7 +3420,7 @@ const I18N = {
     phP1: "Все ваши диалоги с ИИ-агентами в одном месте. Поиск по всем инструментам сразу.",
     phP2: "Выполните `wikiagents list` или `search` в терминале для обновления индекса, затем обновите эту страницу.",
     messages: (n) => `Сообщений: ${n}`,
-    planLabel: "План", summaryLabel: "Саммари", pathLabel: "Путь", noteLabel: "Заметка", resumeBtn: "Терминал", subagentsLabel: "Подагенты",
+    planLabel: "План", summaryLabel: "Саммари", filesLabel: "Файлы", commitsLabel: "Коммиты", pathLabel: "Путь", noteLabel: "Заметка", resumeBtn: "Терминал", subagentsLabel: "Подагенты",
     resumeLabel: "продолжить в терминале: ",
     copied: "скопировано",
     clickToCopy: "Нажмите для копирования",
@@ -3505,7 +3535,7 @@ const I18N = {
     phP1: "Everything your coding agents ever said, in one place. Search works across every tool at once - partial words and CJK included.",
     phP2: "The index updates when you run `wikiagents list` or `search` in a terminal; reload this page afterwards.",
     messages: (n) => `${n} messages`,
-    planLabel: "Plan", summaryLabel: "Summary", pathLabel: "Path", noteLabel: "Note", resumeBtn: "Resume", subagentsLabel: "Subagents",
+    planLabel: "Plan", summaryLabel: "Summary", filesLabel: "Files", commitsLabel: "Commits", pathLabel: "Path", noteLabel: "Note", resumeBtn: "Resume", subagentsLabel: "Subagents",
     resumeLabel: "resume in terminal: ",
     copied: "copied",
     clickToCopy: "Click to copy",
@@ -5474,28 +5504,6 @@ function renderCurrentSession(keepScroll) {
     chips.appendChild(ghChip);
   }
 
-  if (s.commits && s.commits.length > 0) {
-    s.commits.forEach((c) => {
-      const commitChip = el("span", "chip chip-commit");
-      const shortSha = c.sha.slice(0, 7);
-      const commitTitle = c.message ? `${shortSha}: ${c.message}` : `Commit ${shortSha}`;
-      commitChip.title = `${commitTitle} (click to view commit on GitHub / copy SHA)`;
-      const commitUrl = s.git_remote ? `${s.git_remote}/commit/${c.sha}` : null;
-      commitChip.innerHTML = `<svg viewBox="0 0 16 16" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:-1px;margin-right:3px;"><circle cx="8" cy="8" r="3"/><line x1="1" y1="8" x2="5" y2="8"/><line x1="11" y1="8" x2="15" y2="8"/></svg>`;
-      commitChip.appendChild(document.createTextNode(shortSha));
-      commitChip.onclick = (e) => {
-        e.stopPropagation();
-        if (commitUrl) {
-          window.open(commitUrl, "_blank");
-        } else {
-          navigator.clipboard?.writeText(c.sha);
-          showToast(`✓ Commit SHA copied: ${c.sha}`);
-        }
-      };
-      chips.appendChild(commitChip);
-    });
-  }
-
   if (s.parent || s.parent_id) {
     const pId = s.parent ? s.parent.id : s.parent_id;
     const pTitle = s.parent && s.parent.title ? s.parent.title : (L.parentSession || "Parent session");
@@ -5739,6 +5747,55 @@ function renderCurrentSession(keepScroll) {
     }
     filesDet.appendChild(filesBody);
     headBar.appendChild(filesDet);
+  }
+
+  if (s.commits && s.commits.length) {
+    const commitsDet = el("details", "head-detail commits-detail");
+    commitsDet.setAttribute("name", "head-info");
+    const commitsSum = el("summary", "", `⎇ ${L.commitsLabel || "Commits"} (${s.commits.length})`);
+    commitsSum.title = `${L.commitsLabel || "Commits"} (${s.commits.length})`;
+    commitsDet.appendChild(commitsSum);
+
+    const commitsBody = el("div", "head-detail-body commits-body");
+    for (const c of s.commits) {
+      const shortSha = c.sha.slice(0, 7);
+      const commitRow = el("div", "commit-row");
+      const commitChip = el("span", "chip chip-commit");
+      commitChip.innerHTML = `<svg viewBox="0 0 16 16" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:-1px;margin-right:3px;"><circle cx="8" cy="8" r="3"/><line x1="1" y1="8" x2="5" y2="8"/><line x1="11" y1="8" x2="15" y2="8"/></svg>${shortSha}`;
+
+      const commitUrl = s.git_remote ? `${s.git_remote}/commit/${c.sha}` : null;
+      commitChip.title = commitUrl ? `${shortSha} (открыть коммит)` : `${shortSha} (скопировать SHA)`;
+      commitChip.onclick = (e) => {
+        e.stopPropagation();
+        if (commitUrl) {
+          window.open(commitUrl, "_blank");
+        } else {
+          navigator.clipboard?.writeText(c.sha);
+          showToast(`✓ Commit SHA copied: ${c.sha}`);
+        }
+      };
+      commitRow.appendChild(commitChip);
+
+      if (c.message) {
+        const msgSpan = el("span", "commit-msg", c.message);
+        msgSpan.title = c.message;
+        commitRow.appendChild(msgSpan);
+      }
+
+      if (commitUrl) {
+        const extLink = el("a", "commit-ext-link", "↗");
+        extLink.href = commitUrl;
+        extLink.target = "_blank";
+        extLink.rel = "noopener noreferrer";
+        extLink.title = "Открыть коммит на GitHub/GitLab";
+        extLink.onclick = (e) => e.stopPropagation();
+        commitRow.appendChild(extLink);
+      }
+
+      commitsBody.appendChild(commitRow);
+    }
+    commitsDet.appendChild(commitsBody);
+    headBar.appendChild(commitsDet);
   }
 
   const relDet = el("details", "head-detail related-detail");
