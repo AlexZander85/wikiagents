@@ -148,12 +148,21 @@ fn conversation_transcript(conv: &Path) -> Option<PathBuf> {
         conv.join("logs"),
         conv.to_path_buf(),
     ];
-    dirs.iter().find_map(|dir| {
-        ["transcript_full.jsonl", "transcript.jsonl"]
-            .iter()
-            .map(|name| dir.join(name))
-            .find(|p| p.is_file())
-    })
+    // 1. Scan all candidate directories for full, untruncated transcripts first.
+    for dir in &dirs {
+        let full = dir.join("transcript_full.jsonl");
+        if full.is_file() {
+            return Some(full);
+        }
+    }
+    // 2. Fall back to transcript.jsonl only for legacy sessions without transcript_full.jsonl.
+    for dir in &dirs {
+        let compact = dir.join("transcript.jsonl");
+        if compact.is_file() {
+            return Some(compact);
+        }
+    }
+    None
 }
 
 fn conversation_id(path: &Path) -> Option<String> {
