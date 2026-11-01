@@ -4683,27 +4683,28 @@ pub fn sessions_for_file_scoped(
     let rows = stmt.query_map(
         rusqlite::params_from_iter(args.iter().map(|a| a.as_ref())),
         |r| {
-        Ok((
-            SessionRow {
-                last_active: None,
-                session_id: r.get(0)?,
-                tool: r.get(1)?,
-                path: r.get(2)?,
-                project: r.get(3)?,
-                title: r.get(4)?,
-                started: r.get(5)?,
-                msg_count: r.get(6)?,
-                kind: r.get(7)?,
-                preview: None,
-                summary: r.get(8)?,
-                tags: r.get(9)?,
-                archived: r.get(11)?,
-                account: None,
-                parent_id: None,
-            },
-            r.get::<_, String>(10)?,
-        ))
-    })?;
+            Ok((
+                SessionRow {
+                    last_active: None,
+                    session_id: r.get(0)?,
+                    tool: r.get(1)?,
+                    path: r.get(2)?,
+                    project: r.get(3)?,
+                    title: r.get(4)?,
+                    started: r.get(5)?,
+                    msg_count: r.get(6)?,
+                    kind: r.get(7)?,
+                    preview: None,
+                    summary: r.get(8)?,
+                    tags: r.get(9)?,
+                    archived: r.get(11)?,
+                    account: None,
+                    parent_id: None,
+                },
+                r.get::<_, String>(10)?,
+            ))
+        },
+    )?;
     let mut out = rows.collect::<rusqlite::Result<Vec<_>>>()?;
     crate::account_link::annotate(out.iter_mut().map(|(r, _)| r));
     Ok(out)
@@ -5263,16 +5264,17 @@ pub fn projects_scoped(conn: &Connection, filters: &ListQuery<'_>) -> Result<Vec
     let rows = stmt.query_map(
         rusqlite::params_from_iter(args.iter().map(|a| a.as_ref())),
         |r| {
-        let project: String = r.get(0)?;
-        Ok(ProjectRow {
-            project_key: crate::util::project_root_key(&project),
-            project,
-            sessions: r.get(1)?,
-            messages: r.get(2)?,
-            oldest: r.get(3)?,
-            newest: r.get(4)?,
-        })
-    })?;
+            let project: String = r.get(0)?;
+            Ok(ProjectRow {
+                project_key: crate::util::project_root_key(&project),
+                project,
+                sessions: r.get(1)?,
+                messages: r.get(2)?,
+                oldest: r.get(3)?,
+                newest: r.get(4)?,
+            })
+        },
+    )?;
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
 }
 

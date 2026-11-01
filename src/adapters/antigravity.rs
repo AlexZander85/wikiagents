@@ -492,10 +492,7 @@ mod tests {
     #[test]
     fn test_prefers_transcript_full_over_transcript() {
         let temp = tempfile::tempdir().unwrap();
-        let logs_dir = temp
-            .path()
-            .join(".system_generated")
-            .join("logs");
+        let logs_dir = temp.path().join(".system_generated").join("logs");
         std::fs::create_dir_all(&logs_dir).unwrap();
         let compact_path = logs_dir.join("transcript.jsonl");
         let full_path = logs_dir.join("transcript_full.jsonl");
@@ -504,6 +501,9 @@ mod tests {
         std::fs::write(&full_path, "full").unwrap();
 
         let chosen = conversation_transcript(temp.path()).expect("found transcript");
-        assert_eq!(chosen, full_path, "transcript_full.jsonl must be chosen over transcript.jsonl");
+        assert_eq!(
+            chosen, full_path,
+            "transcript_full.jsonl must be chosen over transcript.jsonl"
+        );
     }
 }

@@ -719,21 +719,37 @@ fn exclude_short_filter_rules_and_exceptions() {
     insert_sess("s1_single", 1, &[("user", "Hello there")]);
 
     // 2. Two messages: user + short assistant reply (<250 chars) -> short
-    insert_sess("s2_trivial", 2, &[("user", "Hi"), ("assistant", "Hello! I am an AI.")]);
+    insert_sess(
+        "s2_trivial",
+        2,
+        &[("user", "Hi"), ("assistant", "Hello! I am an AI.")],
+    );
 
     // 2b. Two messages: user + 240 char reply (<250 chars) -> short
     let stub_reply = "B".repeat(240);
-    insert_sess("s2b_stub", 2, &[("user", "Prompt"), ("assistant", &stub_reply)]);
+    insert_sess(
+        "s2b_stub",
+        2,
+        &[("user", "Prompt"), ("assistant", &stub_reply)],
+    );
 
     // 3. Two messages: user + long assistant reply (>=250 chars) -> keep
     let long_reply = "A".repeat(250);
-    insert_sess("s3_long", 2, &[("user", "Explain X"), ("assistant", &long_reply)]);
+    insert_sess(
+        "s3_long",
+        2,
+        &[("user", "Explain X"), ("assistant", &long_reply)],
+    );
 
     // 4. Two messages: user + tool reply -> keep
     insert_sess("s4_tool", 2, &[("user", "Run tool"), ("tool", "Output")]);
 
     // 5. Three messages -> keep
-    insert_sess("s5_multi", 3, &[("user", "1"), ("assistant", "2"), ("user", "3")]);
+    insert_sess(
+        "s5_multi",
+        3,
+        &[("user", "1"), ("assistant", "2"), ("user", "3")],
+    );
 
     // 6. Single message but starred (favorite) -> keep
     insert_sess("s6_fav", 1, &[("user", "Starred item")]);
@@ -761,7 +777,11 @@ fn exclude_short_filter_rules_and_exceptions() {
         index::SessionSort::LastActive,
     )
     .unwrap();
-    assert_eq!(all.len(), 8, "all sessions shown when exclude_short is false");
+    assert_eq!(
+        all.len(),
+        8,
+        "all sessions shown when exclude_short is false"
+    );
 
     let filtered = index::recent_range(
         &conn,

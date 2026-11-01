@@ -245,9 +245,7 @@ fn handle_request(
             let sha = param(query, "sha").unwrap_or_default();
             api_commit(conn, &sha)
         }
-        "/api/git/commit" => {
-            api_git_commit(conn, query)
-        }
+        "/api/git/commit" => api_git_commit(conn, query),
         p if p.starts_with("/api/related/") => {
             api_related(conn, p.trim_start_matches("/api/related/"))
         }
@@ -999,7 +997,9 @@ pub fn inspect_git_commit(repo: &Path, sha: &str) -> Option<serde_json::Value> {
     if !full_sha_out.status.success() {
         return None;
     }
-    let target_sha = String::from_utf8_lossy(&full_sha_out.stdout).trim().to_string();
+    let target_sha = String::from_utf8_lossy(&full_sha_out.stdout)
+        .trim()
+        .to_string();
     let short_sha = if target_sha.len() >= 7 {
         target_sha[..7].to_string()
     } else {
@@ -1007,7 +1007,12 @@ pub fn inspect_git_commit(repo: &Path, sha: &str) -> Option<serde_json::Value> {
     };
 
     let show_out = git_cmd(repo)
-        .args(["show", "-s", "--format=%an%x00%ae%x00%aI%x00%s", &target_sha])
+        .args([
+            "show",
+            "-s",
+            "--format=%an%x00%ae%x00%aI%x00%s",
+            &target_sha,
+        ])
         .output()
         .ok()?;
     let meta = String::from_utf8_lossy(&show_out.stdout);
@@ -1080,12 +1085,19 @@ pub fn inspect_git_commit(repo: &Path, sha: &str) -> Option<serde_json::Value> {
     let stat = stat_out
         .map(|o| {
             let s = String::from_utf8_lossy(&o.stdout);
-            s.lines().skip(1).collect::<Vec<_>>().join("\n").trim().to_string()
+            s.lines()
+                .skip(1)
+                .collect::<Vec<_>>()
+                .join("\n")
+                .trim()
+                .to_string()
         })
         .unwrap_or_default();
 
     let (git_remote, git_branch) = detect_git_remote_and_branch(repo);
-    let commit_url = git_remote.as_ref().map(|r| format!("{r}/commit/{target_sha}"));
+    let commit_url = git_remote
+        .as_ref()
+        .map(|r| format!("{r}/commit/{target_sha}"));
 
     Some(json!({
         "ok": true,
@@ -1120,15 +1132,21 @@ fn is_sha_hex(sha: &str) -> bool {
 /// when the caller knows it. Prefix matching is by `substr`, never by `LIKE`.
 fn commit_message_for(conn: &Connection, sha: &str, session_id: Option<&str>) -> Option<String> {
     let sql = match session_id {
-        Some(_) => "SELECT message FROM session_commits \
+        Some(_) => {
+            "SELECT message FROM session_commits \
                     WHERE session_id = ?2 AND substr(commit_sha, 1, length(?1)) = ?1 \
-                    LIMIT 1",
-        None => "SELECT message FROM session_commits \
-                 WHERE substr(commit_sha, 1, length(?1)) = ?1 LIMIT 1",
+                    LIMIT 1"
+        }
+        None => {
+            "SELECT message FROM session_commits \
+                 WHERE substr(commit_sha, 1, length(?1)) = ?1 LIMIT 1"
+        }
     };
     let mut stmt = conn.prepare_cached(sql).ok()?;
     let row = match session_id {
-        Some(sid) => stmt.query_row(rusqlite::params![sha, sid], |r| r.get::<_, Option<String>>(0)),
+        Some(sid) => stmt.query_row(rusqlite::params![sha, sid], |r| {
+            r.get::<_, Option<String>>(0)
+        }),
         None => stmt.query_row(rusqlite::params![sha], |r| r.get::<_, Option<String>>(0)),
     };
     row.ok().flatten()
@@ -2256,7 +2274,11 @@ mod tests {
             "github.com/org/repo",
             "git://",
         ] {
-            assert_eq!(normalize_git_web_url(dangerous), None, "accepted {dangerous:?}");
+            assert_eq!(
+                normalize_git_web_url(dangerous),
+                None,
+                "accepted {dangerous:?}"
+            );
         }
     }
 
@@ -2343,10 +2365,7 @@ mod tests {
         git_in(&repo, &["init", "-q", "-b", "main"]);
         for name in ["origin", "upstream"] {
             let bare = root.join(format!("{name}.git"));
-            git_in(
-                &root,
-                &["init", "-q", "--bare", bare.to_str().unwrap()],
-            );
+            git_in(&root, &["init", "-q", "--bare", bare.to_str().unwrap()]);
             git_in(&repo, &["remote", "add", name, bare.to_str().unwrap()]);
         }
         (tmp, repo)
@@ -2437,7 +2456,12 @@ mod tests {
         commit_file(&repo, "a.txt", "one", "add a");
         git_in(
             &repo,
-            &["remote", "set-url", "origin", "https://github.com/acme/tool.git"],
+            &[
+                "remote",
+                "set-url",
+                "origin",
+                "https://github.com/acme/tool.git",
+            ],
         );
         let (remote, branch) = detect_git_remote_and_branch(&repo);
         assert_eq!(remote.as_deref(), Some("https://github.com/acme/tool"));

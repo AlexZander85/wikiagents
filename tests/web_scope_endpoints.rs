@@ -171,7 +171,8 @@ fn listings_counts_and_stats_share_the_visible_scope() {
         .map(|r| r["id"].as_str().unwrap())
         .collect();
     assert_eq!(
-        edited_ids, ["short_edited"],
+        edited_ids,
+        ["short_edited"],
         "a session that edited the file survives the short filter: {edited_ids:?}"
     );
 }
@@ -214,7 +215,13 @@ fn git_commit_endpoint_validates_the_sha_and_reads_the_real_repo() {
 
     let (_child, address) = spawn_web(&data_dir);
 
-    for bad in ["sha=", "sha=%25", "sha=abc", "sha=deadbeefxyz", "sha=%25deadbeef"] {
+    for bad in [
+        "sha=",
+        "sha=%25",
+        "sha=abc",
+        "sha=deadbeefxyz",
+        "sha=%25deadbeef",
+    ] {
         let response = get(address, &format!("/api/git/commit?{bad}"));
         assert!(
             response.starts_with("HTTP/1.1 400 "),
