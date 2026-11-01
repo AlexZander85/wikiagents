@@ -4287,20 +4287,36 @@ function escapeHtml(str) {
    page can set it, so it is what tells our own calls from someone else's. */
 const API_HEADERS = { "X-WikiAgents": "1" };
 
-async function jget(url) {
-  const r = await fetch(url, { headers: API_HEADERS });
-  if (!r.ok) throw new Error(await r.text());
-  return r.json();
+async function jget(url, timeoutMs = 30000) {
+  const controller = typeof AbortController !== "undefined" ? new AbortController() : null;
+  const timer = controller && timeoutMs ? setTimeout(() => controller.abort(), timeoutMs) : null;
+  try {
+    const opts = { headers: API_HEADERS };
+    if (controller) opts.signal = controller.signal;
+    const r = await fetch(url, opts);
+    if (!r.ok) throw new Error(await r.text());
+    return r.json();
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
-async function jpost(url, data) {
-  const r = await fetch(url, {
-    method: "POST",
-    headers: { ...API_HEADERS, "Content-Type": "application/json" },
-    body: JSON.stringify(data),
-  });
-  if (!r.ok) throw new Error(await r.text());
-  return r.json();
+async function jpost(url, data, timeoutMs = 30000) {
+  const controller = typeof AbortController !== "undefined" ? new AbortController() : null;
+  const timer = controller && timeoutMs ? setTimeout(() => controller.abort(), timeoutMs) : null;
+  try {
+    const opts = {
+      method: "POST",
+      headers: { ...API_HEADERS, "Content-Type": "application/json" },
+      body: JSON.stringify(data),
+    };
+    if (controller) opts.signal = controller.signal;
+    const r = await fetch(url, opts);
+    if (!r.ok) throw new Error(await r.text());
+    return r.json();
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 const PIN_SVG = `<svg class="pin-svg" viewBox="0 0 16 16" width="11" height="11" fill="currentColor" aria-hidden="true"><path d="M9.828.722a.5.5 0 0 1 .354.146l4.95 4.95a.5.5 0 0 1 0 .708l-2.122 2.12c-.2.2-.47.31-.75.31H11.5l-2.12 2.12 1.414 1.415a.5.5 0 0 1-.708.708l-2.12-2.122-3.183 3.182a.5.5 0 0 1-.707 0l-.707-.707a.5.5 0 0 1 0-.707l3.182-3.182-2.122-2.12a.5.5 0 0 1 .708-.708l1.414 1.414 2.12-2.121v-.757c0-.28.11-.55.31-.75l2.12-2.122a.5.5 0 0 1 .355-.146z"/></svg>`;
@@ -6901,7 +6917,9 @@ async function runSync(isAuto) {
   if (label) label.textContent = isAuto ? (L.syncing || "Auto-syncing...") : (L.syncing || "Syncing...");
 
   try {
-    await jget("/api/sync");
+    // No timeout: a first index takes minutes, and giving up here would report
+    // a failure while the server keeps working.
+    await jget("/api/sync", 0);
     const now = new Date();
     localStorage.setItem("sessionwiki-last-sync", now.toISOString());
     updateSyncTimeDisplay(now.toISOString());

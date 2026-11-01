@@ -23,6 +23,8 @@ progress on the `fix/review-1.3` branch; this section grows as each phase lands.
   waits for the server.
 - **`wikiagents app` no longer panics at startup**: the window's event loop ran on
   the worker thread; it now runs on the main thread.
+- **A long sync is not reported as failed**: the UI's new 30-second request timeout
+  does not apply to `/api/sync`.
 - **The CLI stopped overflowing its own stack**: Windows gives the main thread
   1 MB, and the debug frame of `main` — clap's parser plus the locals of every
   argument variant, all in one function — runs past it. A single new subcommand
