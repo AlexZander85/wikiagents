@@ -482,13 +482,16 @@ fn main() {
         .spawn(run);
     let code = match worker {
         Ok(handle) => match handle.join() {
-            Ok(()) => 0,
+            Ok(work) => {
+                run_on_main_thread(work);
+                0
+            }
             // The panic hook printed the message already.
             Err(_) => 101,
         },
         // With no thread available there is nowhere else to run.
         Err(_) => {
-            run();
+            run_on_main_thread(run());
             0
         }
     };
@@ -496,7 +499,27 @@ fn main() {
     std::process::exit(code);
 }
 
-fn run() {
+/// What the worker leaves behind for the main thread, the only one a window's
+/// event loop may run on.
+enum MainThreadWork {
+    Nothing,
+    #[cfg(feature = "gui")]
+    App(Option<u16>),
+}
+
+fn run_on_main_thread(work: MainThreadWork) {
+    match work {
+        MainThreadWork::Nothing => {}
+        #[cfg(feature = "gui")]
+        MainThreadWork::App(port) => {
+            if let Err(e) = sessionwiki::app::run(port) {
+                eprintln!("wikiagents app error: {e}");
+            }
+        }
+    }
+}
+
+fn run() -> MainThreadWork {
     let cli = Cli::parse();
     let result = match cli.command {
         Command::Scan => commands::scan(),
@@ -607,12 +630,7 @@ fn run() {
             sync,
         } => web::serve(port, no_open, sync),
         #[cfg(feature = "gui")]
-        Command::App { port } => {
-            if let Err(e) = sessionwiki::app::run(port) {
-                eprintln!("wikiagents app error: {e}");
-            }
-            Ok(())
-        }
+        Command::App { port } => return MainThreadWork::App(port),
         Command::Show {
             id,
             full,
@@ -683,14 +701,14 @@ fn run() {
             // Always exit 0 with whatever was printed; never the exit(1) path.
             HookCmd::SessionStart => {
                 sessionwiki::hook::session_start();
-                return;
+                return MainThreadWork::Nothing;
             }
             // A message hook that fails would stop the user's commit.
             HookCmd::PrepareCommitMsg { args } => {
                 let msg_file = args.first().map(String::as_str).unwrap_or("");
                 let source = args.get(1).map(String::as_str);
                 sessionwiki::hook::prepare_commit_msg(msg_file, source);
-                return;
+                return MainThreadWork::Nothing;
             }
             HookCmd::InstallGit { repo } => commands::hook_install_git(repo.as_deref()),
         },
@@ -717,13 +735,14 @@ fn run() {
         ),
         Command::Mcp => {
             sessionwiki::mcp::serve();
-            return;
+            return MainThreadWork::Nothing;
         }
     };
     if let Err(e) = result {
         eprintln!("error: {e:#}");
         std::process::exit(1);
     }
+    MainThreadWork::Nothing
 }
 
 /// Parse a `-L START,END` line range into validated integers (so the raw token

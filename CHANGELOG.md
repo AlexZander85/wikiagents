@@ -21,6 +21,8 @@ progress on the `fix/review-1.3` branch; this section grows as each phase lands.
   with a connect, and Windows retries a refused loopback connection for about 2 s.
   It now binds the port first and opens the index behind it, so the window no longer
   waits for the server.
+- **`wikiagents app` no longer panics at startup**: the window's event loop ran on
+  the worker thread; it now runs on the main thread.
 - **The CLI stopped overflowing its own stack**: Windows gives the main thread
   1 MB, and the debug frame of `main` — clap's parser plus the locals of every
   argument variant, all in one function — runs past it. A single new subcommand
