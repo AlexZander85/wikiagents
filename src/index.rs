@@ -2676,6 +2676,10 @@ pub struct ListQuery<'a> {
     pub until: Option<&'a str>,
     /// Keep subagent sessions; listings hide them by default.
     pub include_subagents: bool,
+    /// Exclude web chats (e.g. tools ending in -web)
+    pub exclude_web: bool,
+    /// Exclude short/stub sessions (0-1 msgs, or 2 msgs with <250 char response)
+    pub exclude_short: bool,
     /// Only these `files.project` values (see [`project_folders`]). `project`
     /// treats a repository and its subfolders as one project; this is for a view
     /// of one folder, which must not lose rows to a limit applied to the whole
@@ -2786,6 +2790,21 @@ fn push_session_scope(
         sql.push_str(" AND f.tool = ?");
         args.push(Box::new(t.to_string()));
     }
+    if filters.exclude_web {
+        sql.push_str(" AND f.tool NOT LIKE '%-web'");
+    }
+    if filters.exclude_short {
+        sql.push_str(
+            " AND (f.msg_count > 2 \
+                   OR (f.msg_count = 2 AND EXISTS(\
+                       SELECT 1 FROM messages m \
+                       WHERE m.session_id = f.session_id \
+                         AND (m.role = 'tool' OR (m.role = 'assistant' AND length(m.text) >= 250))\
+                   )) \
+                   OR EXISTS(SELECT 1 FROM favorites fav WHERE fav.session_id = f.session_id) \
+                   OR EXISTS(SELECT 1 FROM notes n WHERE n.session_id = f.session_id))",
+        );
+    }
     if let Some(p) = filters.project {
         push_project_scope(sql, args, p);
     }
@@ -2846,6 +2865,8 @@ pub fn recent_range(
         since,
         until,
         include_subagents,
+        exclude_web,
+        exclude_short,
         folders,
     } = *query;
     let mut sql = format!(
@@ -2869,6 +2890,8 @@ pub fn recent_range(
             tag,
             since,
             until,
+            exclude_web,
+            exclude_short,
         },
     );
     if let Some(folders) = folders {
@@ -3102,6 +3125,8 @@ pub fn search_scoped(
         tag: scope.tag,
         since: scope.since,
         until: scope.until,
+        exclude_web: scope.exclude_web,
+        exclude_short: scope.exclude_short,
     };
     let terms = parse_search_terms(query);
     if terms.is_empty() {
@@ -3141,6 +3166,8 @@ struct SearchFilters<'a> {
     tag: Option<&'a str>,
     since: Option<&'a str>,
     until: Option<&'a str>,
+    exclude_web: bool,
+    exclude_short: bool,
 }
 
 /// Session-level limits for [`search_scoped`] beyond tool and project.
@@ -3153,6 +3180,10 @@ pub struct SearchScope<'a> {
     pub since: Option<&'a str>,
     /// Only sessions started at or before this (date or RFC 3339 timestamp).
     pub until: Option<&'a str>,
+    /// Exclude web chats (e.g. tools ending in -web)
+    pub exclude_web: bool,
+    /// Exclude short/stub sessions (0-1 msgs, or 2 msgs with <250 char response)
+    pub exclude_short: bool,
 }
 
 fn search_fts_terms(
@@ -3311,6 +3342,8 @@ pub fn search_sessions_multi_terms(
             tag: scope.tag,
             since: scope.since,
             until: scope.until,
+            exclude_web: scope.exclude_web,
+            exclude_short: scope.exclude_short,
         },
     );
     sql.push_str(&format!(
@@ -3379,6 +3412,8 @@ pub fn search_like(
             tag: None,
             since: None,
             until: None,
+            exclude_web: false,
+            exclude_short: false,
         },
     )
 }

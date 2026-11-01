@@ -3132,6 +3132,268 @@
   .backup-close-btn:hover { color: var(--ink-1); }
   .backup-modal-body { padding: 14px 16px; }
 
+  /* Commit inspection modal */
+  .commit-overlay {
+    position: fixed;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(0, 0, 0, 0.55);
+    backdrop-filter: blur(2px);
+    z-index: 10000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .commit-modal {
+    background: var(--card, #fff);
+    border: 1px solid var(--line, #ccc);
+    border-radius: 10px;
+    width: 580px;
+    max-width: 94vw;
+    max-height: 85vh;
+    box-shadow: 0 16px 40px rgba(0, 0, 0, 0.35);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  .commit-modal-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--line);
+    background: var(--card-subtle);
+  }
+  .commit-modal-title {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--ink);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .commit-close-btn {
+    background: transparent;
+    border: none;
+    font-size: 16px;
+    cursor: pointer;
+    color: var(--ink-2);
+    padding: 2px 6px;
+    border-radius: 4px;
+  }
+  .commit-close-btn:hover { color: var(--ink); background: var(--hover); }
+  .commit-modal-body {
+    padding: 14px 16px;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+  .commit-modal-sha-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: var(--bg-sunken, rgba(0,0,0,0.04));
+    padding: 6px 10px;
+    border-radius: 6px;
+    border: 1px solid var(--line);
+    font-size: 12px;
+  }
+  .commit-modal-sha-code {
+    font-family: var(--font-mono, monospace);
+    color: var(--accent);
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    user-select: all;
+  }
+  .btn-copy-small {
+    background: var(--card);
+    border: 1px solid var(--line);
+    color: var(--ink);
+    border-radius: 4px;
+    padding: 2px 8px;
+    font-size: 11px;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: all 0.15s ease;
+  }
+  .btn-copy-small:hover {
+    background: var(--hover);
+    border-color: var(--accent);
+  }
+  .commit-status-card {
+    border-radius: 8px;
+    padding: 10px 12px;
+    font-size: 12px;
+    line-height: 1.45;
+  }
+  .status-unpushed {
+    background: rgba(210, 153, 34, 0.12);
+    border: 1px solid rgba(210, 153, 34, 0.4);
+    color: var(--ink);
+  }
+  .status-pushed {
+    background: rgba(46, 160, 67, 0.12);
+    border: 1px solid rgba(46, 160, 67, 0.4);
+    color: var(--ink);
+  }
+  .status-neutral {
+    background: var(--card-subtle);
+    border: 1px solid var(--line);
+    color: var(--ink-2);
+  }
+  .status-card-top {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-weight: 600;
+    margin-bottom: 4px;
+    font-size: 12px;
+  }
+  .status-desc {
+    color: var(--ink-2);
+    font-size: 11.5px;
+    margin-bottom: 8px;
+  }
+  .status-desc code {
+    background: rgba(0,0,0,0.06);
+    padding: 1px 4px;
+    border-radius: 3px;
+    font-family: var(--font-mono, monospace);
+  }
+  .status-action-box {
+    margin-top: 6px;
+    padding-top: 6px;
+    border-top: 1px solid rgba(210, 153, 34, 0.25);
+  }
+  .action-box-title {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--ink-2);
+    margin-bottom: 4px;
+  }
+  .cmd-box {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: rgba(0,0,0,0.2);
+    padding: 4px 8px;
+    border-radius: 4px;
+  }
+  .cmd-box code {
+    flex: 1;
+    font-family: var(--font-mono, monospace);
+    font-size: 11.5px;
+    color: #f0883e;
+    user-select: all;
+  }
+  .commit-meta-grid {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 4px 10px;
+    font-size: 12px;
+    background: var(--card-subtle);
+    padding: 8px 10px;
+    border-radius: 6px;
+    border: 1px solid var(--line);
+  }
+  .meta-label { color: var(--ink-3); font-weight: 500; }
+  .meta-val { color: var(--ink); }
+  .commit-msg-box {
+    background: var(--bg-sunken, rgba(0,0,0,0.03));
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    padding: 8px 10px;
+    font-size: 12px;
+  }
+  .commit-subject {
+    font-weight: 600;
+    color: var(--ink);
+    margin-bottom: 4px;
+  }
+  .commit-body-text {
+    color: var(--ink-2);
+    white-space: pre-wrap;
+    font-family: var(--font-mono, monospace);
+    font-size: 11px;
+    margin-top: 6px;
+    border-top: 1px solid var(--line);
+    padding-top: 6px;
+  }
+  .commit-stat-section {
+    font-size: 11.5px;
+  }
+  .stat-header {
+    font-weight: 600;
+    color: var(--ink-2);
+    margin-bottom: 4px;
+  }
+  .commit-stat-box {
+    background: var(--code-bg, #16161c);
+    color: var(--ink);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    padding: 6px 10px;
+    font-family: var(--font-mono, monospace);
+    font-size: 11px;
+    max-height: 120px;
+    overflow-y: auto;
+    margin: 0;
+  }
+  .commit-actions-bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 4px;
+    padding-top: 10px;
+    border-top: 1px solid var(--line);
+  }
+  .btn-commit-action {
+    padding: 6px 12px;
+    border-radius: 6px;
+    font-size: 12px;
+    font-weight: 500;
+    cursor: pointer;
+    text-decoration: none;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    transition: all 0.15s ease;
+  }
+  .btn-commit-primary {
+    background: var(--accent);
+    color: #fff;
+    border: none;
+  }
+  .btn-commit-primary:hover { opacity: 0.9; }
+  .btn-gh {
+    background: var(--surface-2, rgba(255,255,255,0.08));
+    color: var(--ink);
+    border: 1px solid var(--line);
+  }
+  .btn-gh:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+    background: var(--hover);
+  }
+  .btn-gh-warn {
+    background: rgba(210, 153, 34, 0.15);
+    color: var(--ink);
+    border: 1px solid rgba(210, 153, 34, 0.4);
+  }
+  .btn-gh-warn:hover {
+    background: rgba(210, 153, 34, 0.25);
+  }
+  .unpushed-tag {
+    font-size: 10px;
+    color: #e3b341;
+    background: rgba(210, 153, 34, 0.2);
+    padding: 1px 5px;
+    border-radius: 3px;
+    margin-left: 2px;
+  }
+
 </style>
 </head>
 <body>
@@ -3195,12 +3457,20 @@
           <option value="msgs">💬 message count</option>
         </select>
       </div>
-      <div class="subagents-row" style="margin-top: 4px; display: flex; align-items: center; justify-content: space-between;">
-        <label class="subagents-label" style="display: inline-flex; align-items: center; gap: 5px; font-size: 11px; color: var(--ink-2); cursor: pointer; user-select: none;">
+      <div class="subagents-row" style="margin-top: 4px; display: flex; align-items: center; justify-content: space-between; gap: 4px; flex-wrap: wrap;">
+        <label class="subagents-label" style="display: inline-flex; align-items: center; gap: 4px; font-size: 11px; color: var(--ink-2); cursor: pointer; user-select: none;">
           <input type="checkbox" id="show-subagents-cb" style="margin: 0; cursor: pointer;">
           <span id="show-subagents-label">🤖 Subagents</span>
         </label>
-        <label class="rewound-label" style="display: inline-flex; align-items: center; gap: 5px; font-size: 11px; color: var(--ink-2); cursor: pointer; user-select: none;">
+        <label class="webchats-label" style="display: inline-flex; align-items: center; gap: 4px; font-size: 11px; color: var(--ink-2); cursor: pointer; user-select: none;" title="Показать/скрыть веб-чаты (ChatGPT, Claude, Gemini, DeepSeek и др.)">
+          <input type="checkbox" id="show-webchats-cb" checked style="margin: 0; cursor: pointer;">
+          <span id="show-webchats-label">🌐 Web Chats</span>
+        </label>
+        <label class="short-label" style="display: inline-flex; align-items: center; gap: 4px; font-size: 11px; color: var(--ink-2); cursor: pointer; user-select: none;" title="Показывать короткие сессии (1-2 сообщения или без ответа модели). Снимите, чтобы скрыть шум.">
+          <input type="checkbox" id="show-short-cb" checked style="margin: 0; cursor: pointer;">
+          <span id="show-short-label">💬 Short</span>
+        </label>
+        <label class="rewound-label" style="display: inline-flex; align-items: center; gap: 4px; font-size: 11px; color: var(--ink-2); cursor: pointer; user-select: none;">
           <input type="checkbox" id="show-rewound-cb" style="margin: 0; cursor: pointer;">
           <span id="show-rewound-label">↩ Rewound</span>
         </label>
@@ -3409,6 +3679,8 @@ const I18N = {
     msgs: (n) => `${n} сообщ.`,
     subagent: "подагент",
     showSubagents: "🤖 Подагенты",
+    showWebChats: "🌐 Веб-чаты",
+    showShort: "💬 Короткие",
     subagentsLabel: "Подагенты",
     parent: "Родитель",
     parentSession: "Родительская сессия",
@@ -3524,6 +3796,8 @@ const I18N = {
     msgs: (n) => `${n} msgs`,
     subagent: "subagent",
     showSubagents: "🤖 Subagents",
+    showWebChats: "🌐 Web Chats",
+    showShort: "💬 Short",
     subagentsLabel: "Subagents",
     parent: "Parent",
     parentSession: "Parent session",
@@ -3642,6 +3916,8 @@ const I18N = {
     msgs: (n) => `메시지 ${n}`,
     subagent: "서브에이전트",
     showSubagents: "🤖 서브에이전트",
+    showWebChats: "🌐 웹 채팅",
+    showShort: "💬 짧은 세션",
     subagentsLabel: "서브에이전트",
     parent: "상위",
     parentSession: "상위 세션",
@@ -3740,6 +4016,8 @@ const I18N = {
     msgs: (n) => `${n}件`,
     subagent: "サブエージェント",
     showSubagents: "🤖 サブエージェント",
+    showWebChats: "🌐 ウェブチャット",
+    showShort: "💬 短いセッション",
     subagentsLabel: "サブエージェント",
     parent: "親",
     parentSession: "親セッション",
@@ -3838,6 +4116,8 @@ const I18N = {
     msgs: (n) => `${n}条`,
     subagent: "子代理",
     showSubagents: "🤖 子代理",
+    showWebChats: "🌐 网页聊天",
+    showShort: "💬 短会话",
     subagentsLabel: "子代理",
     parent: "父会话",
     parentSession: "父会话",
@@ -4212,6 +4492,8 @@ function applyStaticStrings() {
   if ($("tab-snippets-label")) $("tab-snippets-label").textContent = L.snippetsTab || "Snippets";
   if ($("memory-proposals")) renderMemoryProposalsLabels();
   if ($("tab-activity-label")) $("tab-activity-label").textContent = L.activityTab || "Activity";
+  if ($("show-webchats-label")) $("show-webchats-label").textContent = L.showWebChats || "🌐 Web Chats";
+  if ($("show-short-label")) $("show-short-label").textContent = L.showShort || "💬 Short";
   if ($("show-rewound-label")) $("show-rewound-label").textContent = L.showRewound || "↩ Rewound";
   if ($("act-nav-title")) $("act-nav-title").textContent = L.actNavTitle || "Navigation";
   if ($("act-btn-summary-text")) $("act-btn-summary-text").textContent = L.actNavSummary || "Summary";
@@ -5764,21 +6046,20 @@ function renderCurrentSession(keepScroll) {
       commitChip.innerHTML = `<svg viewBox="0 0 16 16" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:-1px;margin-right:3px;"><circle cx="8" cy="8" r="3"/><line x1="1" y1="8" x2="5" y2="8"/><line x1="11" y1="8" x2="15" y2="8"/></svg>${shortSha}`;
 
       const commitUrl = s.git_remote ? `${s.git_remote}/commit/${c.sha}` : null;
-      commitChip.title = commitUrl ? `${shortSha} (открыть коммит)` : `${shortSha} (скопировать SHA)`;
+      commitChip.title = `${shortSha} (скопировать SHA и посмотреть)`;
       commitChip.onclick = (e) => {
         e.stopPropagation();
-        if (commitUrl) {
-          window.open(commitUrl, "_blank");
-        } else {
-          navigator.clipboard?.writeText(c.sha);
-          showToast(`✓ Commit SHA copied: ${c.sha}`);
-        }
+        navigator.clipboard?.writeText(c.sha);
+        showToast(`✓ Commit SHA copied: ${shortSha}`);
+        openCommitModal(c.sha, s.project, s.git_remote, c.message, s.git_branch);
       };
       commitRow.appendChild(commitChip);
 
       if (c.message) {
         const msgSpan = el("span", "commit-msg", c.message);
-        msgSpan.title = c.message;
+        msgSpan.title = `${c.message} (посмотреть детали)`;
+        msgSpan.style.cursor = "pointer";
+        msgSpan.onclick = () => openCommitModal(c.sha, s.project, s.git_remote, c.message, s.git_branch);
         commitRow.appendChild(msgSpan);
       }
 
@@ -5787,7 +6068,7 @@ function renderCurrentSession(keepScroll) {
         extLink.href = commitUrl;
         extLink.target = "_blank";
         extLink.rel = "noopener noreferrer";
-        extLink.title = "Открыть коммит на GitHub/GitLab";
+        extLink.title = "Открыть на GitHub/GitLab (требуется git push для локальных коммитов)";
         extLink.onclick = (e) => e.stopPropagation();
         commitRow.appendChild(extLink);
       }
@@ -6441,6 +6722,10 @@ async function refresh() {
   const sParam = since ? `&since=${encodeURIComponent(since)}` : "";
   const uParam = until ? `&until=${encodeURIComponent(until)}` : "";
   const subParam = $("show-subagents-cb") && $("show-subagents-cb").checked ? "&subagents=1" : "";
+  const showWeb = $("show-webchats-cb") ? $("show-webchats-cb").checked : true;
+  const webParam = !showWeb ? "&no_web=1" : "";
+  const showShort = $("show-short-cb") ? $("show-short-cb").checked : true;
+  const shortParam = !showShort ? "&no_short=1" : "";
   const tagParam = currentTag ? `&tag=${encodeURIComponent(currentTag)}` : "";
   let projParam = "";
   let folderParam = "";
@@ -6474,7 +6759,7 @@ async function refresh() {
   const isSearchActive = searchKeywords.length > 0 || inputVal.length >= 2 || !!currentFileTrace;
 
   if (currentFileTrace) {
-    items = await jget(`/api/trace?path=${encodeURIComponent(currentFileTrace)}&limit=500${t}${folderParam}${sParam}${uParam}`);
+    items = await jget(`/api/trace?path=${encodeURIComponent(currentFileTrace)}&limit=500${t}${folderParam}${sParam}${uParam}${webParam}${shortParam}`);
     if (tool) {
       items = items.filter((row) => row.tool === tool);
     }
@@ -6482,7 +6767,7 @@ async function refresh() {
     // Mode 3: Keyword filter chips via '+' -> cross-message session intersection!
     const sessionTermsParam = `&session_terms=${encodeURIComponent(searchKeywords.join(","))}`;
     const qParam = inputVal ? `&q=${encodeURIComponent(inputVal)}` : "";
-    items = await jget(`/api/search?limit=500${sessionTermsParam}${qParam}${t}${r}${tagParam}${projParam}${folderParam}${sParam}${uParam}`);
+    items = await jget(`/api/search?limit=500${sessionTermsParam}${qParam}${t}${r}${tagParam}${projParam}${folderParam}${sParam}${uParam}${webParam}${shortParam}`);
   } else if (inputVal.length >= 2) {
     const commitPrefixMatch = inputVal.match(/^(?:commit|sha):([0-9a-f]{7,40})$/i);
     const isDirectCommitSha = /^[0-9a-f]{7,40}$/i.test(inputVal) && /[a-f]/i.test(inputVal);
@@ -6499,14 +6784,26 @@ async function refresh() {
     }
     if (items.length === 0) {
       // Mode 1 & 2: Search bar input -> strictly within one message!
-      items = await jget(`/api/search?q=${encodeURIComponent(inputVal)}${t}${r}${tagParam}${projParam}${folderParam}${sParam}${uParam}`);
+      items = await jget(`/api/search?q=${encodeURIComponent(inputVal)}${t}${r}${tagParam}${projParam}${folderParam}${sParam}${uParam}${webParam}${shortParam}`);
     }
   } else if (currentTag) {
-    items = await jget(`/api/sessions?limit=500${t}${tagParam}${folderParam}${sParam}${uParam}${subParam}${sortParam}`);
+    items = await jget(`/api/sessions?limit=500${t}${tagParam}${folderParam}${sParam}${uParam}${subParam}${sortParam}${webParam}${shortParam}`);
   } else {
-    items = await jget(`/api/sessions?limit=500${t}${folderParam}${sParam}${uParam}${subParam}${sortParam}`);
+    items = await jget(`/api/sessions?limit=500${t}${folderParam}${sParam}${uParam}${subParam}${sortParam}${webParam}${shortParam}`);
   }
   if (seq !== refreshSeq) return;
+
+  if (!showWeb) {
+    items = items.filter((row) => !row.tool || !row.tool.endsWith("-web"));
+  }
+
+  if (!showShort) {
+    items = items.filter((row) => {
+      if (favoriteSet.has(row.id) || (noteMap && noteMap.has(row.id))) return true;
+      const count = row.msg_count !== undefined ? row.msg_count : (row.messages ? row.messages.length : 0);
+      return count > 2;
+    });
+  }
 
   if (currentOnlyFavorites) {
     items = items.filter((row) => favoriteSet.has(row.id));
@@ -6592,6 +6889,29 @@ function renderTagBar() {
 
 if ($("show-subagents-cb")) {
   $("show-subagents-cb").addEventListener("change", () => {
+    refresh();
+  });
+}
+
+if ($("show-webchats-cb")) {
+  const savedWebchat = localStorage.getItem("wikiagents-show-webchat");
+  if (savedWebchat !== null) {
+    $("show-webchats-cb").checked = savedWebchat === "1" || savedWebchat === "true";
+  }
+  $("show-webchats-cb").addEventListener("change", () => {
+    localStorage.setItem("wikiagents-show-webchat", $("show-webchats-cb").checked ? "1" : "0");
+    updateToolSelectOptions();
+    refresh();
+  });
+}
+
+if ($("show-short-cb")) {
+  const savedShort = localStorage.getItem("wikiagents-show-short");
+  if (savedShort !== null) {
+    $("show-short-cb").checked = savedShort === "1" || savedShort === "true";
+  }
+  $("show-short-cb").addEventListener("change", () => {
+    localStorage.setItem("wikiagents-show-short", $("show-short-cb").checked ? "1" : "0");
     refresh();
   });
 }
@@ -6876,9 +7196,12 @@ document.addEventListener("keydown", (e) => {
     e.preventDefault();
     $("q").focus();
   }
-  if (e.key === "Escape" && document.activeElement === $("q")) {
-    $("q").value = "";
-    refresh();
+  if (e.key === "Escape") {
+    closeCommitModal();
+    if (document.activeElement === $("q")) {
+      $("q").value = "";
+      refresh();
+    }
   }
 });
 
@@ -6900,6 +7223,33 @@ function updateSyncTimeDisplay(ts) {
   timeEl.title = `${L.lastSynced || "Last synced"}: ${dateStr} ${timeStr}`;
 }
 
+let cachedStatsTools = [];
+
+function updateToolSelectOptions() {
+  const toolSelect = $("tool");
+  if (!toolSelect) return;
+  const showWeb = $("show-webchats-cb") ? $("show-webchats-cb").checked : true;
+  const currentVal = toolSelect.value;
+  
+  const firstOpt = toolSelect.options[0];
+  toolSelect.replaceChildren();
+  if (firstOpt) toolSelect.appendChild(firstOpt);
+  
+  for (const t of cachedStatsTools) {
+    const isWeb = t.tool && t.tool.endsWith("-web");
+    if (!showWeb && isWeb) continue;
+    const opt = el("option", "", t.tool);
+    opt.value = t.tool;
+    toolSelect.appendChild(opt);
+  }
+  
+  if (!showWeb && currentVal && currentVal.endsWith("-web")) {
+    toolSelect.value = "";
+  } else {
+    toolSelect.value = currentVal;
+  }
+}
+
 async function loadStats() {
   const stats = await jget("/api/stats");
   if (!stats) return;
@@ -6913,25 +7263,25 @@ async function loadStats() {
     renderAvailableTags();
   }
   let sessions = 0, bytes = 0;
-  const existingTools = new Set(Array.from($("tool").options).map((o) => o.value));
+  cachedStatsTools = stats.tools || [];
+  updateToolSelectOptions();
+
   const snippetToolSelect = $("snippet-tool");
   const existingSnippetTools = snippetToolSelect ? new Set(Array.from(snippetToolSelect.options).map((o) => o.value)) : new Set();
   for (const t of stats.tools) {
     sessions += t.sessions;
     bytes += t.bytes;
-    if (!existingTools.has(t.tool)) {
-      const opt = el("option", "", t.tool);
-      opt.value = t.tool;
-      $("tool").appendChild(opt);
-    }
     if (snippetToolSelect && !existingSnippetTools.has(t.tool)) {
       const opt = el("option", "", t.tool);
       opt.value = t.tool;
       snippetToolSelect.appendChild(opt);
     }
   }
+  const displayToolsCount = ($("show-webchats-cb") && !$("show-webchats-cb").checked)
+    ? stats.tools.filter(t => !t.tool.endsWith("-web")).length
+    : stats.tools.length;
   $("stats").textContent =
-    L.stats(sessions.toLocaleString(), stats.tools.length, fmtBytes(bytes));
+    L.stats(sessions.toLocaleString(), displayToolsCount, fmtBytes(bytes));
 }
 
 // One sync at a time from this page: a second press (or the auto timer firing
@@ -9255,7 +9605,195 @@ setupSnippetsControls();
   </div>
 </div>
 
+<!-- Commit Details Modal -->
+<div id="commit-modal-overlay" class="commit-overlay" style="display:none;" onclick="if(event.target===this)closeCommitModal()">
+  <div class="commit-modal">
+    <div class="commit-modal-header">
+      <div class="commit-modal-title">
+        <svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:-2px;color:#3fb950;">
+          <circle cx="8" cy="8" r="3"/><line x1="1" y1="8" x2="5" y2="8"/><line x1="11" y1="8" x2="15" y2="8"/>
+        </svg>
+        <span id="commit-modal-sha-title">Коммит</span>
+      </div>
+      <button type="button" class="commit-close-btn" onclick="closeCommitModal()" title="Закрыть (Esc)">✕</button>
+    </div>
+    <div class="commit-modal-body" id="commit-modal-body">
+    </div>
+  </div>
+</div>
+
 <script>
+function closeCommitModal() {
+  const o = document.getElementById("commit-modal-overlay");
+  if (o) o.style.display = "none";
+}
+
+function copyCommitText(text, label) {
+  if (navigator.clipboard) {
+    navigator.clipboard.writeText(text);
+  }
+  showToast("✓ " + (label || "Скопировано"));
+}
+
+function confirmCommitOpen(e) {
+  if (!confirm("Внимание: этот коммит ещё не отправлен на GitHub (git push origin не выполнялся), поэтому сервер GitHub вернёт ошибку 404.\n\nВсё равно открыть ссылку?")) {
+    if (e) e.preventDefault();
+    return false;
+  }
+  return true;
+}
+
+async function openCommitModal(sha, project, gitRemote, message, branch) {
+  const overlay = document.getElementById("commit-modal-overlay");
+  if (!overlay) return;
+  overlay.style.display = "flex";
+
+  const shortSha = sha ? sha.slice(0, 7) : "";
+  document.getElementById("commit-modal-sha-title").textContent = `Коммит ${shortSha}`;
+  const body = document.getElementById("commit-modal-body");
+
+  body.innerHTML = `
+    <div class="commit-modal-sha-row">
+      <span class="commit-modal-sha-label">SHA:</span>
+      <code class="commit-modal-sha-code">${escapeHtml(sha)}</code>
+      <button class="btn-copy-small" onclick="copyCommitText('${escapeHtml(sha)}', 'SHA скопирован')">📋 Скопировать</button>
+    </div>
+    ${message ? `<div class="commit-msg-box"><div class="commit-subject">${escapeHtml(message)}</div></div>` : ''}
+    <div style="display:flex;align-items:center;gap:8px;padding:12px 4px;color:var(--ink-2);font-size:12px;">
+      <span>⏳</span> Проверка состояния в Git...
+    </div>
+  `;
+
+  try {
+    const params = new URLSearchParams({ sha: sha });
+    if (project) params.append("project", project);
+    const res = await fetch(`/api/git/commit?${params.toString()}`, { headers: API_HEADERS });
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    const data = await res.json();
+    renderCommitModalContent(data, sha, project, gitRemote, message, branch);
+  } catch (err) {
+    renderCommitModalContent({
+      ok: true,
+      found_in_git: false,
+      sha: sha,
+      short_sha: shortSha,
+      message: message,
+      remote_url: gitRemote,
+      branch: branch
+    }, sha, project, gitRemote, message, branch);
+  }
+}
+
+function renderCommitModalContent(data, origSha, project, gitRemote, origMessage, origBranch) {
+  const body = document.getElementById("commit-modal-body");
+  if (!body) return;
+
+  const fullSha = data.sha || origSha;
+  const shortSha = data.short_sha || fullSha.slice(0, 7);
+  const remoteUrl = data.remote_url || gitRemote;
+  const curBranch = data.branch || origBranch || 'main';
+  const isPushed = data.pushed === true;
+  const commitUrl = data.commit_url || (remoteUrl ? `${remoteUrl}/commit/${fullSha}` : null);
+  const subject = data.subject || data.message || origMessage || '';
+  const commitBody = data.body || '';
+
+  let statusHtml = '';
+  if (data.found_in_git) {
+    if (!isPushed) {
+      statusHtml = `
+        <div class="commit-status-card status-unpushed">
+          <div class="status-card-top">
+            <span class="status-badge-icon">⚠️</span>
+            <span class="status-title">Локальный коммит (не отправлен на GitHub)</span>
+          </div>
+          <div class="status-desc">
+            Этот коммит существует только в локальном Git-репозитории на вашем компьютере.<br>
+            На GitHub его ещё нет, поэтому ссылка <code>/commit/${shortSha}</code> выдаёт ошибку <strong>404 Not Found</strong>.
+          </div>
+          <div class="status-action-box">
+            <div class="action-box-title">Чтобы отправить коммит на GitHub, выполните:</div>
+            <div class="cmd-box">
+              <code>git push origin ${escapeHtml(curBranch)}</code>
+              <button class="btn-copy-small" onclick="copyCommitText('git push origin ${escapeHtml(curBranch)}', 'Команда скопирована')">📋 Скопировать</button>
+            </div>
+          </div>
+        </div>
+      `;
+    } else {
+      const branchesStr = (data.remote_branches || []).join(', ') || 'origin';
+      statusHtml = `
+        <div class="commit-status-card status-pushed">
+          <div class="status-card-top">
+            <span class="status-badge-icon">🟢</span>
+            <span class="status-title">Отправлен в удалённый репозиторий (${escapeHtml(branchesStr)})</span>
+          </div>
+          <div class="status-desc">Коммит синхронизирован с сервером GitHub. Ссылка активна.</div>
+        </div>
+      `;
+    }
+  } else {
+    statusHtml = `
+      <div class="commit-status-card status-neutral">
+        <div class="status-card-top">
+          <span class="status-badge-icon">ℹ️</span>
+          <span class="status-title">Информация из журнала сессии</span>
+        </div>
+        <div class="status-desc">Локальный Git-репозиторий проекта недоступен по указанному пути или коммит был перезаписан.</div>
+      </div>
+    `;
+  }
+
+  let metaHtml = '';
+  if (data.found_in_git && (data.author || data.date)) {
+    metaHtml = `
+      <div class="commit-meta-grid">
+        ${data.author ? `<span class="meta-label">Автор:</span><span class="meta-val">${escapeHtml(data.author)} ${data.email ? '&lt;' + escapeHtml(data.email) + '&gt;' : ''}</span>` : ''}
+        ${data.date ? `<span class="meta-label">Дата:</span><span class="meta-val">${escapeHtml(new Date(data.date).toLocaleString())}</span>` : ''}
+      </div>
+    `;
+  }
+
+  let statHtml = '';
+  if (data.stat) {
+    statHtml = `
+      <div class="commit-stat-section">
+        <div class="stat-header">Изменённые файлы:</div>
+        <pre class="commit-stat-box">${escapeHtml(data.stat)}</pre>
+      </div>
+    `;
+  }
+
+  let actionsHtml = `
+    <div class="commit-actions-bar">
+      <button type="button" class="btn-commit-action btn-commit-primary" onclick="copyCommitText('${escapeHtml(fullSha)}', 'SHA скопирован')">📋 Скопировать SHA</button>
+      ${commitUrl ? (isPushed ? `
+        <a class="btn-commit-action btn-gh" href="${commitUrl}" target="_blank" rel="noopener noreferrer">↗ Открыть на GitHub</a>
+      ` : `
+        <a class="btn-commit-action btn-gh-warn" href="${commitUrl}" target="_blank" rel="noopener noreferrer" onclick="return confirmCommitOpen(event)">
+          ↗ Открыть на GitHub <span class="unpushed-tag">может быть 404</span>
+        </a>
+      `) : ''}
+    </div>
+  `;
+
+  body.innerHTML = `
+    <div class="commit-modal-sha-row">
+      <span class="commit-modal-sha-label">SHA:</span>
+      <code class="commit-modal-sha-code">${escapeHtml(fullSha)}</code>
+      <button class="btn-copy-small" onclick="copyCommitText('${escapeHtml(fullSha)}', 'SHA скопирован')">📋 Скопировать</button>
+    </div>
+    ${statusHtml}
+    ${metaHtml}
+    ${subject ? `
+      <div class="commit-msg-box">
+        <div class="commit-subject">${escapeHtml(subject)}</div>
+        ${commitBody ? `<div class="commit-body-text">${escapeHtml(commitBody)}</div>` : ''}
+      </div>
+    ` : ''}
+    ${statHtml}
+    ${actionsHtml}
+  `;
+}
 async function openBackupModal() {
   const overlay = document.getElementById("backup-modal-overlay");
   overlay.style.display = "flex";

@@ -3,7 +3,7 @@ use crate::{commands, index, resume};
 use anyhow::{Context, Result};
 use rusqlite::Connection;
 use serde_json::json;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use tiny_http::{Header, Response, Server};
 
 /// Local read-only viewer over the index. By default it does not sync, so it
@@ -244,6 +244,9 @@ fn handle_request(
             let sha = param(query, "sha").unwrap_or_default();
             api_commit(conn, &sha)
         }
+        "/api/git/commit" => {
+            api_git_commit(conn, query)
+        }
         p if p.starts_with("/api/related/") => {
             api_related(conn, p.trim_start_matches("/api/related/"))
         }
@@ -408,6 +411,8 @@ fn api_sessions(conn: &Connection, query: &str) -> Result<Boxed> {
         .unwrap_or(500);
     let include_subagents = param(query, "subagents").is_some_and(|v| v == "1" || v == "true")
         || param(query, "all").is_some_and(|v| v == "1" || v == "true");
+    let exclude_web = param(query, "no_web").is_some_and(|v| v == "1" || v == "true");
+    let exclude_short = param(query, "no_short").is_some_and(|v| v == "1" || v == "true");
     let folders = folder_param(query)
         .map(|folder| index::project_folders(conn, &folder))
         .transpose()?;
@@ -421,6 +426,8 @@ fn api_sessions(conn: &Connection, query: &str) -> Result<Boxed> {
             since: since.as_deref(),
             until: until.as_deref(),
             include_subagents,
+            exclude_web,
+            exclude_short,
             folders: folders.as_deref(),
         },
         index::SessionSort::parse(param(query, "sort").as_deref().unwrap_or("")),
@@ -495,11 +502,15 @@ fn api_search(conn: &Connection, query: &str) -> Result<Boxed> {
     let since = param(query, "since");
     let until = param(query, "until");
     let tag = param(query, "tag");
+    let exclude_web = param(query, "no_web").is_some_and(|v| v == "1" || v == "true");
+    let exclude_short = param(query, "no_short").is_some_and(|v| v == "1" || v == "true");
     let scope = index::SearchScope {
         roles: roles.as_deref(),
         tag: tag.as_deref(),
         since: since.as_deref(),
         until: until.as_deref(),
+        exclude_web,
+        exclude_short,
     };
 
     // If session_terms are provided via '+' chips, run cross-message session intersection
@@ -846,6 +857,219 @@ fn api_commit(conn: &Connection, sha: &str) -> Result<Boxed> {
                 .boxed(),
         )
     }
+}
+
+/// Find the root repository directory containing `.git`
+pub fn find_git_root(path: &Path) -> Option<PathBuf> {
+    let raw_str = path.to_string_lossy();
+    let clean_str = raw_str.trim().trim_matches(['"', '\'']).trim();
+    if clean_str.is_empty() {
+        return None;
+    }
+    let clean_path = Path::new(clean_str);
+    let mut current = if clean_path.is_file() {
+        clean_path.parent().unwrap_or(clean_path).to_path_buf()
+    } else {
+        clean_path.to_path_buf()
+    };
+    if !current.exists() {
+        return None;
+    }
+    for _ in 0..10 {
+        let candidate = current.join(".git");
+        if candidate.is_dir() {
+            return Some(current);
+        } else if candidate.is_file() {
+            if let Ok(content) = std::fs::read_to_string(&candidate) {
+                if let Some(rest) = content.trim().strip_prefix("gitdir:") {
+                    let pointer = rest.trim();
+                    let resolved = current.join(pointer);
+                    if resolved.exists() {
+                        return Some(current);
+                    }
+                }
+            }
+        }
+        if let Some(parent) = current.parent() {
+            if parent == current || parent.as_os_str().is_empty() {
+                break;
+            }
+            current = parent.to_path_buf();
+        } else {
+            break;
+        }
+    }
+    None
+}
+
+fn git_cmd(repo: &Path) -> std::process::Command {
+    let mut cmd = std::process::Command::new("git");
+    cmd.current_dir(repo);
+    for (k, _) in std::env::vars() {
+        if k.starts_with("GIT_") {
+            cmd.env_remove(k);
+        }
+    }
+    cmd.env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_PAGER", "cat")
+        .args([
+            "--no-pager",
+            "-c",
+            "core.fsmonitor=",
+            "-c",
+            "core.hooksPath=/dev/null",
+        ]);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000);
+    }
+    cmd
+}
+
+pub fn inspect_git_commit(repo: &Path, sha: &str) -> Option<serde_json::Value> {
+    let clean = sha.trim();
+    let full_sha_out = git_cmd(repo)
+        .args(["rev-parse", "--verify", &format!("{clean}^{{commit}}")])
+        .output()
+        .ok()?;
+    if !full_sha_out.status.success() {
+        return None;
+    }
+    let target_sha = String::from_utf8_lossy(&full_sha_out.stdout).trim().to_string();
+    let short_sha = if target_sha.len() >= 7 {
+        target_sha[..7].to_string()
+    } else {
+        target_sha.clone()
+    };
+
+    let show_out = git_cmd(repo)
+        .args(["show", "-s", "--format=%an%x00%ae%x00%aI%x00%s", &target_sha])
+        .output()
+        .ok()?;
+    let meta = String::from_utf8_lossy(&show_out.stdout);
+    let parts: Vec<&str> = meta.trim().split('\0').collect();
+    let author = parts.first().unwrap_or(&"").to_string();
+    let email = parts.get(1).unwrap_or(&"").to_string();
+    let date = parts.get(2).unwrap_or(&"").to_string();
+    let subject = parts.get(3).unwrap_or(&"").to_string();
+
+    let body_out = git_cmd(repo)
+        .args(["show", "-s", "--format=%b", &target_sha])
+        .output()
+        .ok();
+    let body = body_out
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_default();
+
+    let branch_out = git_cmd(repo)
+        .args(["branch", "-r", "--contains", &target_sha])
+        .output()
+        .ok();
+    let remote_branches: Vec<String> = branch_out
+        .map(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .lines()
+                .map(|l| l.trim().to_string())
+                .filter(|l| !l.is_empty() && !l.contains("->"))
+                .collect()
+        })
+        .unwrap_or_default();
+    let is_pushed = !remote_branches.is_empty();
+
+    let stat_out = git_cmd(repo)
+        .args(["show", "--stat", "--oneline", &target_sha])
+        .output()
+        .ok();
+    let stat = stat_out
+        .map(|o| {
+            let s = String::from_utf8_lossy(&o.stdout);
+            s.lines().skip(1).collect::<Vec<_>>().join("\n").trim().to_string()
+        })
+        .unwrap_or_default();
+
+    let (git_remote, git_branch) = detect_git_remote_and_branch(repo);
+    let commit_url = git_remote.as_ref().map(|r| format!("{r}/commit/{target_sha}"));
+
+    Some(json!({
+        "ok": true,
+        "found_in_git": true,
+        "sha": target_sha,
+        "short_sha": short_sha,
+        "author": author,
+        "email": email,
+        "date": date,
+        "subject": subject,
+        "body": body,
+        "pushed": is_pushed,
+        "remote_branches": remote_branches,
+        "remote_url": git_remote,
+        "commit_url": commit_url,
+        "branch": git_branch,
+        "stat": stat,
+    }))
+}
+
+fn api_git_commit(conn: &Connection, query: &str) -> Result<Boxed> {
+    let sha = param(query, "sha").unwrap_or_default();
+    let clean_sha = sha.trim();
+    if clean_sha.is_empty() {
+        return Ok(
+            Response::from_string(json!({ "error": "missing commit sha" }).to_string())
+                .with_status_code(400)
+                .boxed(),
+        );
+    }
+
+    let mut project = param(query, "project").unwrap_or_default();
+    let session_id = param(query, "session_id").unwrap_or_default();
+    if project.is_empty() && !session_id.is_empty() {
+        if let Ok(p) = conn.query_row(
+            "SELECT project FROM sessions WHERE session_id = ?1",
+            rusqlite::params![session_id],
+            |r| r.get::<_, String>(0),
+        ) {
+            project = p;
+        }
+    }
+
+    let mut db_message = None;
+    if let Ok(mut stmt) =
+        conn.prepare("SELECT message FROM session_commits WHERE commit_sha LIKE ?1 LIMIT 1")
+    {
+        let pattern = format!("{clean_sha}%");
+        if let Ok(m) = stmt.query_row(rusqlite::params![pattern], |r| r.get::<_, Option<String>>(0)) {
+            db_message = m;
+        }
+    }
+
+    let clean_proj = project.trim().trim_matches(['"', '\'']).trim();
+    let proj_path = Path::new(clean_proj);
+    let repo_root = if !clean_proj.is_empty() && proj_path.exists() {
+        find_git_root(proj_path)
+    } else {
+        None
+    };
+
+    if let Some(repo) = repo_root {
+        if let Some(info) = inspect_git_commit(&repo, clean_sha) {
+            return json_response(info);
+        }
+    }
+
+    let short = if clean_sha.len() >= 7 {
+        &clean_sha[..7]
+    } else {
+        clean_sha
+    };
+    json_response(json!({
+        "ok": true,
+        "found_in_git": false,
+        "sha": clean_sha,
+        "short_sha": short,
+        "message": db_message,
+    }))
 }
 
 /// Detect git remote web URL (GitHub, GitLab, Bitbucket) and branch from a repository directory
@@ -1925,5 +2149,18 @@ mod tests {
             r
         );
         assert!(branch.is_some(), "detects git branch");
+    }
+
+    #[test]
+    fn test_inspect_git_commit_self() {
+        use super::inspect_git_commit;
+        use std::path::Path;
+        let info = inspect_git_commit(Path::new("."), "HEAD");
+        assert!(info.is_some(), "can inspect HEAD in current repo");
+        let v = info.unwrap();
+        assert_eq!(v["ok"], true);
+        assert_eq!(v["found_in_git"], true);
+        assert!(v["sha"].as_str().unwrap().len() >= 40);
+        assert!(v["author"].as_str().is_some());
     }
 }

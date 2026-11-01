@@ -618,3 +618,169 @@ fn the_project_filter_matches_its_text_literally() {
     assert_eq!(search("deploy", "my_app"), ["under"], "full-text path");
     assert_eq!(search("ab", "my_app"), ["under"], "short-term path");
 }
+
+#[test]
+fn exclude_web_filter_excludes_web_chat_sessions() {
+    let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let (conn, _dir) = fresh_index();
+    for (id, tool) in [("ide_sess", "claude-code"), ("web_sess", "gpt-web")] {
+        conn.execute(
+            "INSERT OR REPLACE INTO files
+             (path, mtime, size, session_id, tool, project, title, started, ended, msg_count, kind)
+             VALUES (?1, 0, 0, ?2, ?3, 'web', ?2, '2026-06-10T10:00:00+00:00',
+                     '2026-06-10T10:00:00+00:00', 1, 'main')",
+            params![format!("/fake/{id}.json"), id, tool],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO messages(session_id, role, text) VALUES (?1, 'user', 'query hello')",
+            params![id],
+        )
+        .unwrap();
+        let mid = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO msgs(rowid, text) VALUES (?1, 'query hello')",
+            params![mid],
+        )
+        .unwrap();
+    }
+
+    let all = index::recent_range(
+        &conn,
+        10,
+        &index::ListQuery {
+            exclude_web: false,
+            ..Default::default()
+        },
+        index::SessionSort::LastActive,
+    )
+    .unwrap();
+    assert_eq!(all.len(), 2);
+
+    let only_ide = index::recent_range(
+        &conn,
+        10,
+        &index::ListQuery {
+            exclude_web: true,
+            ..Default::default()
+        },
+        index::SessionSort::LastActive,
+    )
+    .unwrap();
+    assert_eq!(only_ide.len(), 1);
+    assert_eq!(only_ide[0].session_id, "ide_sess");
+
+    let search_hits = index::search_scoped(
+        &conn,
+        "query hello",
+        10,
+        None,
+        None,
+        index::SearchScope {
+            exclude_web: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(search_hits.len(), 1);
+    assert_eq!(search_hits[0].row.session_id, "ide_sess");
+}
+
+#[test]
+fn exclude_short_filter_rules_and_exceptions() {
+    let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let (conn, _dir) = fresh_index();
+
+    let insert_sess = |id: &str, msg_count: i64, msgs: &[(&str, &str)]| {
+        conn.execute(
+            "INSERT OR REPLACE INTO files
+             (path, mtime, size, session_id, tool, project, title, started, ended, msg_count, kind)
+             VALUES (?1, 0, 0, ?2, 'test-tool', 'proj', ?2, '2026-06-10T10:00:00+00:00',
+                     '2026-06-10T10:00:00+00:00', ?3, 'main')",
+            params![format!("/fake/{id}.json"), id, msg_count],
+        )
+        .unwrap();
+        for (role, text) in msgs {
+            conn.execute(
+                "INSERT INTO messages(session_id, role, text) VALUES (?1, ?2, ?3)",
+                params![id, role, text],
+            )
+            .unwrap();
+            let mid = conn.last_insert_rowid();
+            conn.execute(
+                "INSERT INTO msgs(rowid, text) VALUES (?1, ?2)",
+                params![mid, text],
+            )
+            .unwrap();
+        }
+    };
+
+    // 1. One user message only (msg_count = 1) -> short
+    insert_sess("s1_single", 1, &[("user", "Hello there")]);
+
+    // 2. Two messages: user + short assistant reply (<250 chars) -> short
+    insert_sess("s2_trivial", 2, &[("user", "Hi"), ("assistant", "Hello! I am an AI.")]);
+
+    // 2b. Two messages: user + 240 char reply (<250 chars) -> short
+    let stub_reply = "B".repeat(240);
+    insert_sess("s2b_stub", 2, &[("user", "Prompt"), ("assistant", &stub_reply)]);
+
+    // 3. Two messages: user + long assistant reply (>=250 chars) -> keep
+    let long_reply = "A".repeat(250);
+    insert_sess("s3_long", 2, &[("user", "Explain X"), ("assistant", &long_reply)]);
+
+    // 4. Two messages: user + tool reply -> keep
+    insert_sess("s4_tool", 2, &[("user", "Run tool"), ("tool", "Output")]);
+
+    // 5. Three messages -> keep
+    insert_sess("s5_multi", 3, &[("user", "1"), ("assistant", "2"), ("user", "3")]);
+
+    // 6. Single message but starred (favorite) -> keep
+    insert_sess("s6_fav", 1, &[("user", "Starred item")]);
+    conn.execute(
+        "INSERT INTO favorites(session_id, created_at) VALUES ('s6_fav', '2026-06-10T10:00:00Z')",
+        [],
+    )
+    .unwrap();
+
+    // 7. Single message but has note -> keep
+    insert_sess("s7_note", 1, &[("user", "Noted item")]);
+    conn.execute(
+        "INSERT INTO notes(session_id, note, updated) VALUES ('s7_note', 'My note', '2026-06-10T10:00:00Z')",
+        [],
+    )
+    .unwrap();
+
+    let all = index::recent_range(
+        &conn,
+        20,
+        &index::ListQuery {
+            exclude_short: false,
+            ..Default::default()
+        },
+        index::SessionSort::LastActive,
+    )
+    .unwrap();
+    assert_eq!(all.len(), 8, "all sessions shown when exclude_short is false");
+
+    let filtered = index::recent_range(
+        &conn,
+        20,
+        &index::ListQuery {
+            exclude_short: true,
+            ..Default::default()
+        },
+        index::SessionSort::LastActive,
+    )
+    .unwrap();
+    let remaining_ids: Vec<String> = filtered.into_iter().map(|r| r.session_id).collect();
+    assert_eq!(remaining_ids.len(), 5);
+    assert!(!remaining_ids.contains(&"s1_single".to_string()));
+    assert!(!remaining_ids.contains(&"s2_trivial".to_string()));
+    assert!(!remaining_ids.contains(&"s2b_stub".to_string()));
+    assert!(remaining_ids.contains(&"s3_long".to_string()));
+    assert!(remaining_ids.contains(&"s4_tool".to_string()));
+    assert!(remaining_ids.contains(&"s5_multi".to_string()));
+    assert!(remaining_ids.contains(&"s6_fav".to_string()));
+    assert!(remaining_ids.contains(&"s7_note".to_string()));
+}

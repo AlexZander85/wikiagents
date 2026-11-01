@@ -52,13 +52,8 @@ fn listed(conn: &Connection, project: &str) -> Vec<String> {
         conn,
         50,
         &index::ListQuery {
-            tool: None,
             project: Some(project),
-            tag: None,
-            since: None,
-            until: None,
-            include_subagents: false,
-            folders: None,
+            ..Default::default()
         },
         index::SessionSort::Created,
     )
