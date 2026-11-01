@@ -443,6 +443,77 @@ fn item_at(json: &Value, at: usize, items: fn(&Value) -> Option<&Vec<Value>>) ->
 /// `pick` says where the chats sit in a file and `token_of` when a chat last
 /// changed, which is what decides between two exports of one conversation.
 fn scan_store(
+    tool: &str,
+    cache: &JsonCache,
+    files: &[PathBuf],
+    pick: fn(&Value) -> Option<&Vec<Value>>,
+    token_of: fn(&Value, i64) -> i64,
+) -> (StoreKeys, bool) {
+    // Unit tests must not read or write the data directory of whoever runs them.
+    if cfg!(test) {
+        return scan_with_memo(&mut ScanMemo::default(), cache, files, pick, token_of);
+    }
+    let path = memo_path(tool);
+    let mut memo = path.as_deref().map(load_memo).unwrap_or_default();
+    let before = memo.clone();
+    let result = scan_with_memo(&mut memo, cache, files, pick, token_of);
+    if let (Some(path), true) = (path, memo != before) {
+        save_memo(&path, &memo);
+    }
+    result
+}
+
+/// Raise when what a scan extracts from a chat changes (its id, change token or
+/// message count), or a remembered file would keep answering the old way.
+const MEMO_VERSION: u32 = 1;
+
+/// What the last scan found in each export file. Exports are large and rarely
+/// change, and listing a store used to parse all of them on every sync only to
+/// learn that nothing was new. Losing this costs one slow scan, nothing else.
+#[derive(Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+struct ScanMemo {
+    version: u32,
+    files: HashMap<String, FileMemo>,
+}
+
+#[derive(Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+struct FileMemo {
+    mtime_ms: i64,
+    size: u64,
+    /// `(native id, change token, message count)` of each chat.
+    chats: Vec<(String, i64, usize)>,
+}
+
+fn memo_path(tool: &str) -> Option<PathBuf> {
+    let db = crate::index::db_path().ok()?;
+    Some(db.parent()?.join("web_scan").join(format!("{tool}.json")))
+}
+
+fn load_memo(path: &Path) -> ScanMemo {
+    std::fs::read(path)
+        .ok()
+        .and_then(|raw| serde_json::from_slice::<ScanMemo>(&raw).ok())
+        .filter(|memo| memo.version == MEMO_VERSION)
+        .unwrap_or_default()
+}
+
+/// Through a temporary file, so a second process never reads half of it. A failed
+/// write only means the next scan parses again.
+fn save_memo(path: &Path, memo: &ScanMemo) {
+    let (Some(dir), Ok(raw)) = (path.parent(), serde_json::to_vec(memo)) else {
+        return;
+    };
+    let tmp = path.with_extension(format!("{}.tmp", std::process::id()));
+    let written = std::fs::create_dir_all(dir)
+        .and_then(|()| std::fs::write(&tmp, raw))
+        .and_then(|()| std::fs::rename(&tmp, path));
+    if written.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+}
+
+fn scan_with_memo(
+    memo: &mut ScanMemo,
     cache: &JsonCache,
     files: &[PathBuf],
     pick: fn(&Value) -> Option<&Vec<Value>>,
@@ -450,25 +521,51 @@ fn scan_store(
 ) -> (StoreKeys, bool) {
     let mut keys = StoreKeys::default();
     let mut had_error = false;
+    let mut current = HashMap::new();
     for file in files {
-        let json = match cache.get_or_load(file) {
-            Ok(json) => json,
-            Err(_) => {
-                had_error = true;
-                continue;
+        let name = file.to_string_lossy().into_owned();
+        let mtime_ms = file_mtime_ms(file);
+        let size = file.metadata().map_or(0, |m| m.len());
+        let known = memo
+            .files
+            .remove(&name)
+            .filter(|m| m.mtime_ms == mtime_ms && m.size == size);
+        let entry = match known {
+            Some(entry) => entry,
+            None => {
+                // A file that cannot be read is not remembered: its next scan
+                // has to try again, and to report the error again.
+                let Ok(json) = cache.get_or_load(file) else {
+                    had_error = true;
+                    continue;
+                };
+                let chats = pick(&json)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|item| {
+                        let id = native_id_of_item(item)?;
+                        Some((
+                            id.to_string(),
+                            token_of(item, mtime_ms),
+                            message_count_of(item),
+                        ))
+                    })
+                    .collect();
+                FileMemo {
+                    mtime_ms,
+                    size,
+                    chats,
+                }
             }
         };
-        let Some(arr) = pick(&json) else {
-            continue;
-        };
-        let mtime = file_mtime_ms(file);
-        for item in arr {
-            let Some(id) = native_id_of_item(item) else {
-                continue;
-            };
-            keys.add(id, file, token_of(item, mtime), message_count_of(item));
+        for (id, token, count) in &entry.chats {
+            keys.add(id, file, *token, *count);
         }
+        current.insert(name, entry);
     }
+    // Only the files that still exist, so the memo cannot grow forever.
+    memo.version = MEMO_VERSION;
+    memo.files = current;
     (keys, had_error)
 }
 
@@ -515,7 +612,13 @@ impl Adapter for ClaudeWeb {
 
     fn store(&self) -> Option<Store> {
         let (files, fs_error) = discover_vendor_files("claude");
-        let (keys, read_error) = scan_store(&self.cache, &files, top_level_items, Self::token);
+        let (keys, read_error) = scan_store(
+            self.name(),
+            &self.cache,
+            &files,
+            top_level_items,
+            Self::token,
+        );
         Some(Store {
             keys: keys.finish(),
             files,
@@ -670,7 +773,13 @@ impl Adapter for DeepSeekWeb {
 
     fn store(&self) -> Option<Store> {
         let (files, fs_error) = discover_vendor_files("deepseek");
-        let (keys, read_error) = scan_store(&self.cache, &files, top_level_items, Self::token);
+        let (keys, read_error) = scan_store(
+            self.name(),
+            &self.cache,
+            &files,
+            top_level_items,
+            Self::token,
+        );
         Some(Store {
             keys: keys.finish(),
             files,
@@ -884,7 +993,13 @@ impl Adapter for GeminiWeb {
 
     fn store(&self) -> Option<Store> {
         let (files, fs_error) = discover_vendor_files("gemini");
-        let (keys, read_error) = scan_store(&self.cache, &files, top_level_items, Self::token);
+        let (keys, read_error) = scan_store(
+            self.name(),
+            &self.cache,
+            &files,
+            top_level_items,
+            Self::token,
+        );
         Some(Store {
             keys: keys.finish(),
             files,
@@ -1029,7 +1144,13 @@ impl Adapter for QwenWeb {
 
     fn store(&self) -> Option<Store> {
         let (files, fs_error) = discover_vendor_files("qwen");
-        let (keys, read_error) = scan_store(&self.cache, &files, data_or_top_items, Self::token);
+        let (keys, read_error) = scan_store(
+            self.name(),
+            &self.cache,
+            &files,
+            data_or_top_items,
+            Self::token,
+        );
         Some(Store {
             keys: keys.finish(),
             files,
@@ -1172,7 +1293,13 @@ impl Adapter for GlmWeb {
 
     fn store(&self) -> Option<Store> {
         let (files, fs_error) = discover_vendor_files("glm");
-        let (keys, read_error) = scan_store(&self.cache, &files, top_level_items, Self::token);
+        let (keys, read_error) = scan_store(
+            self.name(),
+            &self.cache,
+            &files,
+            top_level_items,
+            Self::token,
+        );
         Some(Store {
             keys: keys.finish(),
             files,
@@ -1434,7 +1561,13 @@ impl Adapter for GptWeb {
 
     fn store(&self) -> Option<Store> {
         let (files, fs_error) = discover_gpt_files();
-        let (keys, read_error) = scan_store(&self.cache, &files, gpt_top_level_items, Self::token);
+        let (keys, read_error) = scan_store(
+            self.name(),
+            &self.cache,
+            &files,
+            gpt_top_level_items,
+            Self::token,
+        );
         Some(Store {
             keys: keys.finish(),
             files,
@@ -1870,6 +2003,7 @@ mod tests {
         for files in [&[&older, &newer], &[&newer, &older]] {
             let owned: Vec<PathBuf> = files.iter().map(|p| (*p).clone()).collect();
             let (keys, had_error) = scan_store(
+                "test",
                 &JsonCache::default(),
                 &owned,
                 top_level_items,
@@ -1896,6 +2030,7 @@ mod tests {
 
         let owned = vec![short.clone(), long.clone()];
         let (keys, _) = scan_store(
+            "test",
             &JsonCache::default(),
             &owned,
             top_level_items,
@@ -2075,6 +2210,50 @@ mod tests {
         assert!(!is_gpt_file(root, &root.join("notes.json")));
         assert!(!is_gpt_file(root, &root.join("gpt/user.json")));
         assert!(!is_gpt_file(root, &root.join("conversations_claude.json")));
+    }
+
+    #[test]
+    fn an_unchanged_export_is_not_parsed_again_and_a_changed_one_is() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("chats.json");
+        let chat = |id: &str| format!(r#"[{{"uuid":"{id}","updated_at":"2026-01-01T00:00:00Z"}}]"#);
+        std::fs::write(&file, chat("aaa")).unwrap();
+        let files = vec![file.clone()];
+        let stamp = std::fs::metadata(&file).unwrap().modified().unwrap();
+        let mut memo = ScanMemo::default();
+        let scan = |memo: &mut ScanMemo| {
+            let cache = JsonCache::default();
+            let (keys, failed) =
+                scan_with_memo(memo, &cache, &files, top_level_items, ClaudeWeb::token);
+            (keys.finish(), failed)
+        };
+        let (first, failed) = scan(&mut memo);
+        assert_eq!((first.len(), failed), (1, false));
+
+        // Not JSON any more, but the same size and time: it must not be opened.
+        let same_size = "x".repeat(chat("aaa").len());
+        std::fs::write(&file, same_size).unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&file)
+            .unwrap()
+            .set_modified(stamp)
+            .unwrap();
+        let (again, failed) = scan(&mut memo);
+        assert!(!failed, "the file was parsed");
+        assert_eq!(again, first);
+
+        // A new export is read, and a broken one reports itself every time.
+        std::fs::write(&file, chat("bbbbbb")).unwrap();
+        let (changed, failed) = scan(&mut memo);
+        assert!(!failed);
+        assert_ne!(changed, first);
+        std::fs::write(&file, "not json at all, and longer than it was").unwrap();
+        assert!(scan(&mut memo).1);
+        assert!(
+            scan(&mut memo).1,
+            "a failure is not remembered as a success"
+        );
     }
 
     #[test]

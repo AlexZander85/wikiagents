@@ -11,6 +11,10 @@ ChatGPT exports, an instant desktop window, and the gaps found by checking 1.3.0
   recaps and hidden context.
 
 ### Performance
+- **Sync no longer re-reads web exports that did not change**: every sync parsed
+  each export in full, hundreds of megabytes, to learn that nothing was new. What a
+  scan found is now remembered per file by size and time, in `web_scan/` beside the
+  index; deleting that folder only costs one slow scan.
 - **The desktop window opens without the two-second wait**: the app probed its port
   with a connect, and Windows retries a refused loopback connection for about 2 s.
   It now binds the port first and opens the index behind it, so the window no longer
