@@ -94,6 +94,11 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Review the memories an agent proposed and a person has not decided on yet
+    Memory {
+        #[command(subcommand)]
+        cmd: MemoryCmd,
+    },
     /// Search sessions; terms are ANDed within one message and quotes mark phrases
     Search {
         /// AND terms within a message; phrase whitespace follows the configured tokenizer
@@ -427,7 +432,60 @@ enum HookCmd {
     },
 }
 
+#[derive(Subcommand)]
+enum MemoryCmd {
+    /// List memory proposals, pending ones by default
+    List {
+        /// Only this status: pending, approved, rejected, or all
+        #[arg(long)]
+        status: Option<String>,
+        /// Emit as a JSON array
+        #[arg(long)]
+        json: bool,
+    },
+    /// Save a proposal into the knowledge base
+    Approve {
+        /// Proposal id, from `memory list`
+        id: String,
+        /// Emit the decision as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Turn a proposal down; it stays in the queue as a record of the decision
+    Reject {
+        /// Proposal id, from `memory list`
+        id: String,
+        /// Emit the decision as JSON
+        #[arg(long)]
+        json: bool,
+    },
+}
+
 fn main() {
+    // Windows reserves 1 MB of stack for the main thread, and the debug frame of
+    // `run` - clap's parser plus the locals of every argument variant, all in one
+    // function - runs past it: each new subcommand makes the whole CLI crash at
+    // startup, not only its own. Do the work on a thread whose stack we size.
+    let worker = std::thread::Builder::new()
+        .stack_size(16 * 1024 * 1024)
+        .spawn(run);
+    let code = match worker {
+        Ok(handle) => match handle.join() {
+            Ok(()) => 0,
+            // The panic hook printed the message already.
+            Err(_) => 101,
+        },
+        // With no thread available there is nowhere else to run.
+        Err(_) => {
+            run();
+            0
+        }
+    };
+    let _ = std::io::Write::flush(&mut std::io::stdout());
+    std::process::exit(code);
+}
+
+fn run() {
     let cli = Cli::parse();
     let result = match cli.command {
         Command::Scan => commands::scan(),
@@ -487,6 +545,11 @@ fn main() {
             };
             commands::remember(&title, &body, session.as_deref(), tags.as_deref(), json)
         })(),
+        Command::Memory { cmd } => match cmd {
+            MemoryCmd::List { status, json } => commands::memory_list(status.as_deref(), json),
+            MemoryCmd::Approve { id, json } => commands::memory_approve(&id, json),
+            MemoryCmd::Reject { id, json } => commands::memory_reject(&id, json),
+        },
         Command::Search {
             query,
             limit,

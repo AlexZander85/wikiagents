@@ -17,6 +17,13 @@ progress on the `fix/review-1.3` branch; this section grows as each phase lands.
   `/api/snippet/save|delete|rename` answer 405 to any other method.
 
 ### Fixed
+- **The CLI stopped overflowing its own stack**: Windows gives the main thread
+  1 MB, and the debug frame of `main` — clap's parser plus the locals of every
+  argument variant, all in one function — runs past it. A single new subcommand
+  was enough to make *every* command die at startup with «thread 'main' has
+  overflowed its stack»; phase 5 worked around it by shrinking one variant. The
+  work now runs on a thread with a stack we size, so the CLI's argument enum can
+  grow without the binary crashing on launch.
 - **CI is green again**: `cargo fmt`, all 45 `cargo clippy -D warnings` errors, and
   the `account_badge` trace test that still expected the pre-1.2.1 absolute-path
   match. A failing test no longer takes the rest of its file down with it: every
@@ -147,6 +154,24 @@ progress on the `fix/review-1.3` branch; this section grows as each phase lands.
   merge / missing file → message untouched, no duplicate trailer, real
   `git commit` round trip through the installed hook, foreign hook preserved,
   non-hex input rejected) and the extraction/lookup unit tests in `index.rs`.
+- **`propose_memory` — a memory an agent offers, a person approves**: MCP now
+  exposes `propose_memory` next to `remember`. The note goes into a new
+  `memory_proposals` table (`status` pending|approved|rejected, `decided_at`,
+  `snippet_id`) instead of the knowledge base, and it is redacted and capped on
+  the way in (title ≤ 200 characters, content ≤ 20 000) because the queue is read
+  by the web UI and travels in backups while it waits. Approving writes the
+  snippet with the same code `remember` uses (`index::save_memory_snippet`) and
+  is idempotent: the stored `snippet_id` makes a second approval return the
+  first save. Decide in the Snippets tab — «🧠 Предложения памяти (N)» above the
+  list, with the count on the tab badge, the body markdown-rendered rather than
+  pasted raw, a tool/session link and ✓/✕ buttons — or with
+  `wikiagents memory list|approve|reject`. The endpoints are
+  `GET /api/memory/proposals` and `POST /api/memory/approve|reject`, so a
+  decision needs the `X-WikiAgents` header like every other write.
+  New tests: `tests/memory_proposals.rs` (propose → approve → exactly one
+  snippet and an empty queue, reject keeps the record and saves nothing,
+  redaction and caps, the MCP tool call, the CLI, and 403 for a decision sent
+  without the header).
 
 ## [1.2.1] - 2026-10-31 (WikiAgents)
 

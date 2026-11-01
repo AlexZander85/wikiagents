@@ -271,6 +271,7 @@ fn create_meta_schema(conn: &Connection) -> Result<()> {
     )?;
     ensure_favorites_table(conn)?;
     ensure_snippets_table(conn)?;
+    ensure_memory_proposals_table(conn)?;
     Ok(())
 }
 
@@ -3966,6 +3967,233 @@ pub fn snippet_indices_for_session(conn: &Connection, session_id: &str) -> Resul
     };
     let rows = stmt.query_map(params![session_id], |r| Ok(r.get::<_, i64>(0)? as usize))?;
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
+// --- memory proposals: what an agent offers, before a person accepts it ---
+
+/// The longest title and body a proposal may carry. An agent asked to "save
+/// everything" otherwise queues a whole transcript as one note.
+pub const PROPOSAL_TITLE_MAX: usize = 200;
+pub const PROPOSAL_CONTENT_MAX: usize = 20_000;
+
+/// A note an agent proposed to remember.
+///
+/// `remember` writes straight into the knowledge base, so a wrong conclusion is
+/// recalled as fact by every later session. A proposal stays out of the index
+/// until a human approves it, and the queue is where they decide.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct MemoryProposal {
+    pub id: String,
+    pub title: String,
+    pub content: String,
+    pub tags: String,
+    pub session_id: Option<String>,
+    pub tool: Option<String>,
+    pub created_at: String,
+    /// `pending`, `approved` or `rejected`.
+    pub status: String,
+    pub decided_at: Option<String>,
+    /// Set when the approval wrote a snippet, so approving twice is one snippet.
+    pub snippet_id: Option<i64>,
+}
+
+/// Proposals are kept data, not something a cache rebuild can re-derive.
+///
+/// The DDL is best-effort for the same reason the favorites table is: a
+/// read-only handle (the MCP server, the web UI) cannot create it, and the
+/// writer that owns the index does so when it opens. Turning that into an error
+/// here would hide an empty queue behind a failure.
+pub fn ensure_memory_proposals_table(conn: &Connection) -> Result<()> {
+    let _ = conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS memory_proposals(
+            id          TEXT PRIMARY KEY,
+            title       TEXT NOT NULL,
+            content     TEXT NOT NULL,
+            tags        TEXT NOT NULL DEFAULT '',
+            session_id  TEXT,
+            tool        TEXT,
+            created_at  TEXT NOT NULL,
+            status      TEXT NOT NULL DEFAULT 'pending',
+            decided_at  TEXT,
+            snippet_id  INTEGER
+        );
+        CREATE INDEX IF NOT EXISTS idx_memprop_status ON memory_proposals(status, created_at);",
+    );
+    Ok(())
+}
+
+/// Queue a note for approval and answer with its id.
+///
+/// The content is redacted here rather than at approval: the queue is readable
+/// by the web UI and lives in backups, and a secret must not reach either while
+/// waiting for a decision.
+pub fn propose_memory(
+    conn: &Connection,
+    title: &str,
+    content: &str,
+    tags: Option<&str>,
+    session_id: Option<&str>,
+    tool: Option<&str>,
+) -> Result<String> {
+    ensure_memory_proposals_table(conn)?;
+    let title = title.trim();
+    let content = content.trim();
+    if title.is_empty() {
+        anyhow::bail!("title is required");
+    }
+    if content.is_empty() {
+        anyhow::bail!("content is required");
+    }
+    let title = crate::util::truncate(title, PROPOSAL_TITLE_MAX);
+    let content = cap_chars(content, PROPOSAL_CONTENT_MAX);
+    let now = chrono::Utc::now().to_rfc3339();
+    let id = crate::util::short_id(&format!("{title}\u{1}{content}\u{1}{now}"));
+    conn.execute(
+        "INSERT INTO memory_proposals(id, title, content, tags, session_id, tool, created_at)
+         VALUES (?1,?2,?3,?4,?5,?6,?7)",
+        params![
+            id,
+            title,
+            crate::redact::redact(&content),
+            tags.unwrap_or("").trim(),
+            session_id.filter(|s| !s.trim().is_empty()).map(str::trim),
+            tool.filter(|t| !t.trim().is_empty()).map(str::trim),
+            now,
+        ],
+    )?;
+    Ok(id)
+}
+
+/// Proposals newest first. `status` narrows to one state; empty or `all` answers
+/// with every state, decided ones included.
+pub fn list_memory_proposals(
+    conn: &Connection,
+    status: Option<&str>,
+) -> Result<Vec<MemoryProposal>> {
+    ensure_memory_proposals_table(conn)?;
+    let wanted = status
+        .map(str::trim)
+        .filter(|s| !s.is_empty() && !s.eq_ignore_ascii_case("all"))
+        .map(str::to_ascii_lowercase);
+    let mut stmt = conn.prepare(
+        "SELECT id, title, content, tags, session_id, tool, created_at, status,
+                decided_at, snippet_id
+         FROM memory_proposals
+         WHERE (?1 IS NULL OR status = ?1)
+         ORDER BY created_at DESC, id",
+    )?;
+    let rows = stmt.query_map(params![wanted], |r| {
+        Ok(MemoryProposal {
+            id: r.get(0)?,
+            title: r.get(1)?,
+            content: r.get(2)?,
+            tags: r.get(3)?,
+            session_id: r.get(4)?,
+            tool: r.get(5)?,
+            created_at: r.get(6)?,
+            status: r.get(7)?,
+            decided_at: r.get(8)?,
+            snippet_id: r.get(9)?,
+        })
+    })?;
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
+/// Save a memory the way the MCP `remember` tool does, so a note an agent saved
+/// and one a person approved from the queue cannot drift apart in shape.
+pub fn save_memory_snippet(
+    conn: &Connection,
+    title: &str,
+    content: &str,
+    tags: Option<&str>,
+    session_id: &str,
+) -> Result<i64> {
+    save_snippet(
+        conn,
+        &NewSnippet {
+            session_id,
+            message_idx: 0,
+            title,
+            lang: Some("markdown"),
+            content,
+            tags,
+            tool: Some("assistant"),
+            role: Some("assistant_memory"),
+            message_ts: None,
+        },
+    )
+}
+
+/// Write an approved proposal to the knowledge base. Idempotent: a proposal that
+/// already carries a snippet answers with that id instead of saving a second one.
+pub fn approve_memory_proposal(conn: &Connection, id: &str) -> Result<i64> {
+    ensure_memory_proposals_table(conn)?;
+    let row = conn.query_row(
+        "SELECT title, content, tags, session_id, snippet_id
+         FROM memory_proposals WHERE id = ?1",
+        params![id],
+        |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, Option<String>>(3)?,
+                r.get::<_, Option<i64>>(4)?,
+            ))
+        },
+    );
+    let Ok((title, content, tags, session_id, existing)) = row else {
+        anyhow::bail!("no proposal {id}");
+    };
+    if let Some(snippet_id) = existing {
+        return Ok(snippet_id);
+    }
+    let snippet_id = save_memory_snippet(
+        conn,
+        &title,
+        &content,
+        (!tags.is_empty()).then_some(tags.as_str()),
+        session_id.as_deref().unwrap_or("global"),
+    )?;
+    conn.execute(
+        "UPDATE memory_proposals SET status = 'approved', decided_at = ?2, snippet_id = ?3
+         WHERE id = ?1",
+        params![id, chrono::Utc::now().to_rfc3339(), snippet_id,],
+    )?;
+    Ok(snippet_id)
+}
+
+/// Turn a proposal down. It stays in the table as a record of the decision;
+/// deleting it would lose the only trace that the agent offered it.
+pub fn reject_memory_proposal(conn: &Connection, id: &str) -> Result<bool> {
+    ensure_memory_proposals_table(conn)?;
+    let changed = conn.execute(
+        "UPDATE memory_proposals SET status = 'rejected', decided_at = ?2
+         WHERE id = ?1 AND status != 'approved'",
+        params![id, chrono::Utc::now().to_rfc3339()],
+    )?;
+    if changed > 0 {
+        return Ok(true);
+    }
+    let exists: bool = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM memory_proposals WHERE id = ?1)",
+            params![id],
+            |r| r.get(0),
+        )
+        .unwrap_or(false);
+    Ok(exists)
+}
+
+/// Keep the first `max` characters of a body, marked as cut. Unlike
+/// `util::truncate` this preserves newlines: the content is markdown.
+fn cap_chars(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        return s.to_string();
+    }
+    let mut cut: String = s.chars().take(max).collect();
+    cut.push_str("\n… truncated");
+    cut
 }
 
 // --- provenance: sessions <-> the code they produced ---

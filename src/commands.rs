@@ -280,20 +280,7 @@ pub fn remember(
 ) -> Result<()> {
     let conn = index::open()?;
     let effective_session = session.unwrap_or("global");
-    let id = index::save_snippet(
-        &conn,
-        &index::NewSnippet {
-            session_id: effective_session,
-            message_idx: 0,
-            title,
-            lang: Some("markdown"),
-            content,
-            tags,
-            role: Some("assistant_memory"),
-            tool: Some("assistant"),
-            message_ts: None,
-        },
-    )?;
+    let id = index::save_memory_snippet(&conn, title, content, tags, effective_session)?;
     if json {
         println!(
             "{}",
@@ -306,6 +293,97 @@ pub fn remember(
         );
     } else {
         println!("Saved assistant memory #{} [{}]", id, title);
+    }
+    Ok(())
+}
+
+/// List memories an agent proposed and a person has not decided on yet.
+///
+/// `status` is `pending`, `approved`, `rejected`, or `all`; empty means pending,
+/// because the queue a human works through is the pending one.
+pub fn memory_list(status: Option<&str>, json: bool) -> Result<()> {
+    let conn = index::open_readonly()?;
+    let wanted = match status.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(s) => {
+            if !matches!(s, "pending" | "approved" | "rejected" | "all") {
+                anyhow::bail!("status must be pending, approved, rejected, or all");
+            }
+            if s == "all" {
+                None
+            } else {
+                Some(s.to_ascii_lowercase())
+            }
+        }
+        None => Some("pending".to_string()),
+    };
+    let items = index::list_memory_proposals(&conn, wanted.as_deref())?;
+    if json {
+        println!("{}", serde_json::to_string(&items)?);
+        return Ok(());
+    }
+    if items.is_empty() {
+        println!(
+            "No {} memory proposals.",
+            wanted.as_deref().unwrap_or("queued")
+        );
+        return Ok(());
+    }
+    println!(
+        "{}",
+        bold(&format!(
+            "{:<13} {:<9} {:<10} {:<13} {:<40} {}",
+            "ID", "STATUS", "TOOL", "SESSION", "TITLE", "CREATED"
+        ))
+    );
+    for p in items {
+        let status = match p.status.as_str() {
+            "approved" => green("approved"),
+            "rejected" => dim("rejected"),
+            other => yellow(other),
+        };
+        println!(
+            "{:<13} {:<9} {:<10} {:<13} {:<40} {}",
+            p.id,
+            status,
+            p.tool.as_deref().unwrap_or("-"),
+            yellow(&truncate(&p.session_id.unwrap_or_default(), 13)),
+            truncate(&p.title, 40),
+            dim(&p.created_at.chars().take(10).collect::<String>()),
+        );
+    }
+    println!("{}", dim("approve with `wikiagents memory approve <id>`"));
+    Ok(())
+}
+
+/// Save a proposed memory to the knowledge base.
+pub fn memory_approve(id: &str, json: bool) -> Result<()> {
+    let conn = index::open()?;
+    let snippet_id = index::approve_memory_proposal(&conn, id.trim())?;
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({"ok": true, "id": id.trim(), "status": "approved", "snippet_id": snippet_id})
+        );
+    } else {
+        println!("Approved {id} - saved as snippet #{snippet_id}.");
+    }
+    Ok(())
+}
+
+/// Turn down a proposed memory. It stays in the table as the record of the
+/// decision, so `memory list --status rejected` can still show it.
+pub fn memory_reject(id: &str, json: bool) -> Result<()> {
+    let conn = index::open()?;
+    let found = index::reject_memory_proposal(&conn, id.trim())?;
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({"ok": found, "id": id.trim(), "status": "rejected"})
+        );
+    } else if found {
+        println!("Rejected {id}.");
+    } else {
+        println!("No memory proposal {id}.");
     }
     Ok(())
 }

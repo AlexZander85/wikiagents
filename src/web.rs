@@ -207,6 +207,9 @@ fn handle_request(
         "/api/forget" => api_forget(conn, &mut request, query),
         "/api/brief" => api_brief(conn, query),
         "/api/snippets" => api_snippets(conn, query),
+        "/api/memory/proposals" => api_memory_proposals(conn, query),
+        "/api/memory/approve" => api_memory_decide(conn, &mut request, true),
+        "/api/memory/reject" => api_memory_decide(conn, &mut request, false),
         "/api/snippet/save" => api_snippet_save(conn, &mut request, query),
         "/api/snippet/delete" => api_snippet_delete(conn, &mut request, query),
         "/api/snippet/rename" => api_snippet_rename(conn, &mut request, query),
@@ -254,6 +257,8 @@ const POST_ONLY_PATHS: &[&str] = &[
     "/api/backup/restore",
     "/api/backup/run",
     "/api/forget",
+    "/api/memory/approve",
+    "/api/memory/reject",
     "/api/snippet/delete",
     "/api/snippet/rename",
     "/api/snippet/save",
@@ -1121,6 +1126,38 @@ fn api_snippets(conn: &Connection, query: &str) -> Result<Boxed> {
         limit,
     )?;
     json_response(json!(snippets))
+}
+
+/// The approval queue an agent wrote into: pending proposals, or a chosen state.
+fn api_memory_proposals(conn: &Connection, query: &str) -> Result<Boxed> {
+    let status = param(query, "status");
+    let rows = index::list_memory_proposals(conn, status.as_deref())?;
+    json_response(json!(rows))
+}
+
+/// Approve or reject one proposal. It answers with the id it was given, so a
+/// client that raced itself (two clicks) gets the same row back.
+fn api_memory_decide(
+    conn: &Connection,
+    req: &mut tiny_http::Request,
+    approve: bool,
+) -> Result<Boxed> {
+    let mut body = String::new();
+    let _ = req.as_reader().read_to_string(&mut body);
+    let id = serde_json::from_str::<serde_json::Value>(&body)
+        .ok()
+        .and_then(|v| v.get("id").and_then(|i| i.as_str()).map(str::to_string))
+        .context("missing id")?;
+    let id = id.trim().to_string();
+    if approve {
+        let snippet_id = index::approve_memory_proposal(conn, &id)?;
+        json_response(
+            json!({ "ok": true, "id": id, "status": "approved", "snippet_id": snippet_id }),
+        )
+    } else {
+        let ok = index::reject_memory_proposal(conn, &id)?;
+        json_response(json!({ "ok": ok, "id": id, "status": "rejected" }))
+    }
 }
 
 fn api_snippet_delete(

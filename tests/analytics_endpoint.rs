@@ -50,6 +50,12 @@ fn spawn_web(data_dir: &Path) -> (WebChild, SocketAddr) {
 
 /// Send one `Connection: close` request and return the whole response, status
 /// line included.
+///
+/// A body bigger than the server's write buffer arrives `Transfer-Encoding:
+/// chunked`, and a raw socket sees the framing a browser hides - including a
+/// chunk boundary that cuts a multibyte character in half. So the bytes are
+/// read as bytes and the framing is undone before the response is turned into
+/// text; the page itself is the only answer big enough for that path today.
 fn exchange(address: SocketAddr, request: &str) -> String {
     let mut stream = TcpStream::connect(address).unwrap();
     stream
@@ -59,9 +65,62 @@ fn exchange(address: SocketAddr, request: &str) -> String {
         .set_write_timeout(Some(Duration::from_secs(5)))
         .unwrap();
     write!(stream, "{request}").unwrap();
-    let mut response = String::new();
-    stream.read_to_string(&mut response).unwrap();
-    response
+    let mut raw = Vec::new();
+    stream.read_to_end(&mut raw).unwrap();
+    let Some(split) = raw
+        .windows(4)
+        .position(|w| w == &b"\r\n\r\n"[..])
+        .map(|i| i + 4)
+    else {
+        return String::from_utf8_lossy(&raw).to_string();
+    };
+    let (head, body) = raw.split_at(split);
+    let head = String::from_utf8_lossy(head).to_string();
+    let chunked = head.lines().skip(1).any(|line| {
+        let (name, value) = line.split_once(':').unwrap_or(("", ""));
+        name.trim_matches(' ')
+            .eq_ignore_ascii_case("transfer-encoding")
+            && value.contains("chunked")
+    });
+    let body = if chunked {
+        decode_chunked(body)
+    } else {
+        body.to_vec()
+    };
+    format!("{head}\r\n\r\n{}", String::from_utf8_lossy(&body))
+}
+
+/// Concatenate the payloads of a `Transfer-Encoding: chunked` body.
+fn decode_chunked(body: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(body.len());
+    let mut rest = body;
+    while let Some(line_end) = rest
+        .windows(2)
+        .position(|w| w == &b"\r\n"[..])
+        .map(|i| i + 2)
+    {
+        let line = std::str::from_utf8(&rest[..line_end - 2])
+            .unwrap_or("")
+            .trim();
+        let Ok(size) = usize::from_str_radix(line, 16) else {
+            break;
+        };
+        if size == 0 {
+            break;
+        }
+        let Some(end) = line_end.checked_add(size) else {
+            break;
+        };
+        if end > rest.len() {
+            break;
+        }
+        out.extend_from_slice(&rest[line_end..end]);
+        rest = &rest[end..];
+        if rest.starts_with(b"\r\n") {
+            rest = &rest[2..];
+        }
+    }
+    out
 }
 
 fn get(address: SocketAddr, path: &str) -> String {

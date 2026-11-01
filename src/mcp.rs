@@ -254,6 +254,23 @@ fn tools_list() -> Value {
                 },
                 "required": ["title", "content"]
             }
+        },
+        {
+            "name": "propose_memory",
+            "title": "Propose a memory for the user to approve",
+            "description": "Предложить запись памяти; она появится в WikiAgents и будет сохранена только после подтверждения пользователем. The note enters an approval queue instead of the knowledge base: the person reviews it in the Snippets tab or with `wikiagents memory approve <id>`. Use it when the agent is not sure the conclusion is its own to keep; `remember` is for what the user already asked to save.",
+            "annotations": {"readOnlyHint": false},
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string", "description": "Short, descriptive title of the memory or decision (max 200 characters)."},
+                    "content": {"type": "string", "description": "Markdown text with the conclusion, root cause, pattern or snippet (max 20000 characters; secrets are redacted before it is stored)."},
+                    "session_id": {"type": "string", "description": "Optional session ID to link this memory to."},
+                    "tags": {"type": "string", "description": "Optional comma-separated tags (e.g. 'architecture, auth, sqlite')."},
+                    "tool": {"type": "string", "description": "Optional name of the agent proposing this, recorded for the reviewer."}
+                },
+                "required": ["title", "content"]
+            }
         }
     ]})
 }
@@ -481,6 +498,7 @@ fn tool_call(conn: &mut Option<Connection>, params: &Value) -> Result<Value, (i6
         "list_favorites" => Ok(tool_favorites(conn, &args)),
         "list_snippets" => Ok(tool_snippets(conn, &args)),
         "remember" => Ok(tool_remember(conn, &args)),
+        "propose_memory" => Ok(tool_propose_memory(conn, &args)),
         other => Err((-32602, format!("Unknown tool: {other}"))),
     }
 }
@@ -1220,22 +1238,15 @@ fn tool_remember(_conn: &mut Option<Connection>, args: &Value) -> Value {
         Err(e) => return text_result(format!("failed to open database for writing: {e}"), true),
     };
 
-    match crate::index::save_snippet(
+    match crate::index::save_memory_snippet(
         &write_conn,
-        &crate::index::NewSnippet {
-            session_id: if session_id.is_empty() {
-                "global"
-            } else {
-                session_id
-            },
-            message_idx: 0,
-            title,
-            lang: Some("markdown"),
-            content,
-            tags,
-            tool: Some("assistant"),
-            role: Some("assistant_memory"),
-            message_ts: None,
+        title,
+        content,
+        tags,
+        if session_id.is_empty() {
+            "global"
+        } else {
+            session_id
         },
     ) {
         Ok(id) => json_result(vec![json!({
@@ -1251,6 +1262,55 @@ fn tool_remember(_conn: &mut Option<Connection>, args: &Value) -> Value {
         ),
     }
 }
+
+/// Queue a note for the human instead of writing it to the knowledge base: the
+/// same shape as `remember`, minus the part where the agent decides alone.
+fn tool_propose_memory(_conn: &mut Option<Connection>, args: &Value) -> Value {
+    let title = args
+        .get("title")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim();
+    let content = args
+        .get("content")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim();
+    if title.is_empty() {
+        return text_result("title is required".into(), true);
+    }
+    if content.is_empty() {
+        return text_result("content is required".into(), true);
+    }
+    let write_conn = match crate::index::open() {
+        Ok(c) => c,
+        Err(e) => return text_result(format!("failed to open database for writing: {e}"), true),
+    };
+    match crate::index::propose_memory(
+        &write_conn,
+        title,
+        content,
+        args.get("tags").and_then(Value::as_str),
+        args.get("session_id").and_then(Value::as_str),
+        args.get("tool").and_then(Value::as_str),
+    ) {
+        Ok(id) => json_result(vec![json!({
+            "ok": true,
+            "id": id,
+            "status": "pending",
+            "title": title,
+            "message": format!(
+                "Proposed memory {id} [{title}]. It is not saved yet: a person approves or \
+                 rejects it in WikiAgents (Snippets tab, or `wikiagents memory approve {id}`)."
+            )
+        })]),
+        Err(e) => text_result(
+            format!("propose memory failed: {}", safe_text(&e.to_string())),
+            true,
+        ),
+    }
+}
+
 /// The blocking stdio serve loop. Owns every byte written to stdout; EOF on
 /// stdin exits cleanly.
 pub fn serve() {
@@ -1931,7 +1991,7 @@ mod tests {
     }
 
     #[test]
-    fn tools_list_has_ten_readonly_tools() {
+    fn tools_list_has_twelve_tools_and_ten_of_them_are_readonly() {
         let v = call(r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#).unwrap();
         let tools = v["result"]["tools"].as_array().unwrap();
         let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
@@ -1952,15 +2012,20 @@ mod tests {
                 "get_session_summary",
                 "list_favorites",
                 "list_snippets",
-                "remember"
+                "remember",
+                "propose_memory"
             ]
         );
         for t in tools {
-            if t["name"] != "remember" {
+            if t["name"] != "remember" && t["name"] != "propose_memory" {
                 assert_eq!(t["annotations"]["readOnlyHint"], true);
             }
             assert_eq!(t["inputSchema"]["type"], "object");
         }
+        assert_eq!(
+            tools[11]["annotations"]["readOnlyHint"], false,
+            "a proposal writes a row, so it is not read-only"
+        );
         assert!(v["result"].get("nextCursor").is_none());
     }
 

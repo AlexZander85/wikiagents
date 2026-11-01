@@ -39,7 +39,8 @@ agentwiki <command> --json
 
 ## 2. MCP Tools Reference
 
-AgentWiki exposes 10 read-only tools to connected agents:
+AgentWiki exposes 12 tools to connected agents: 10 read-only, plus `remember`
+and `propose_memory`, which write to the knowledge base and its approval queue.
 
 ### 🌟 1. `recall_solution` (High-Level Problem Solving)
 Synthesizes a solution from past sessions in a single call.
@@ -133,6 +134,24 @@ Finds sessions related to a given session by shared project, touched files, or t
 Lists the most recent sessions across all tools ("who is around").
 - **Arguments:** `limit` *(integer, default 10)*, `tool` *(optional)*, `exclude_id` *(optional)*.
 
+### 🧠 11. `remember` (Writes — Knowledge Base)
+Stores a durable memory, key conclusion, or architectural insight straight into the knowledge base.
+- **When to use:** The user asked you to save something, or the conclusion is yours and verified. If you are not sure it should become long-term memory, use `propose_memory` instead.
+- **Arguments:**
+  - `title` *(string, required)*: Short, descriptive title.
+  - `content` *(string, required)*: Markdown with the conclusion, root cause, or pattern.
+  - `session_id` *(string, optional)*: Session to link the memory to (default: `global`).
+  - `tags` *(string, optional)*: Comma-separated tags.
+- **Returns:** `{ "ok": true, "id": <snippet id>, "role": "assistant_memory", "message": ... }`. Queryable later with `list_snippets(role="assistant_memory")`.
+
+### 🧠 12. `propose_memory` (Writes — Approval Queue)
+Queues a note for the human instead of saving it. The proposal appears in WikiAgents (Snippets tab) and is written to the knowledge base only after they approve it.
+- **When to use:** You are not sure the conclusion is yours to keep, or it could contradict a documented decision. Never let a proposal be recalled as fact by later sessions — that is exactly why it waits.
+- **Same arguments as `remember`**, plus `tool` *(string, optional)*: which agent is proposing.
+- **Limits:** Title ≤ 200 characters, content ≤ 20 000 characters (truncated), secrets redacted **before** it is stored — the queue is readable by the UI and travels in backups.
+- **Returns:** `{ "ok": true, "id": "<12-char id>", "status": "pending", "title": ..., "message": ... }`.
+- **Decide a proposal:** in the UI, or with `agentwiki memory list` / `memory approve <id>` / `memory reject <id>`. Rejected notes stay in the queue as a record and never become snippets; approving twice returns the same snippet.
+
 ---
 
 ## 3. CLI Commands Reference (for Shell Agents)
@@ -143,6 +162,8 @@ When operating from bash or PowerShell, invoke `agentwiki` directly:
 |---|---|---|
 | `favorites` | `agentwiki favorites [--project <p>] [--json]` | List starred ⭐ verified solutions |
 | `snippets` | `agentwiki snippets [--query <q>] [--lang <l>] [--json]` | Query pinned 📌 snippets in Knowledge Base |
+| `memory` | `agentwiki memory list [--status pending\|approved\|rejected\|all] [--json]` | Review what agents proposed to remember (pending by default) |
+| `memory` | `agentwiki memory approve <id> [--json]` / `memory reject <id>` | Save a proposal to the knowledge base, or turn it down |
 | `recall` | `agentwiki recall "<query>" [-n 5] [--json]` | Search and brief top matching session |
 | `search` | `agentwiki search "<query>" [--role user,assistant] [--json]` | Full-text search across conversations |
 | `trace` | `agentwiki trace <path>` | Find sessions that modified a file |

@@ -2270,6 +2270,111 @@
     padding: 30px 14px;
     color: var(--ink-2);
   }
+  /* Memory proposals: an agent offered these, a person has to accept them */
+  .memory-proposals {
+    flex: 0 0 auto;
+    max-height: 42vh;
+    overflow-y: auto;
+    margin: 0 14px 8px;
+    padding: 8px 10px;
+    border: 1px dashed var(--accent);
+    border-radius: 8px;
+    background: var(--card-subtle);
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .memory-proposals-title {
+    font-size: 11.5px;
+    font-weight: 700;
+    color: var(--ink);
+    letter-spacing: 0.02em;
+  }
+  .memory-proposal-card {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 7px;
+    padding: 8px 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .memory-proposal-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+  }
+  .memory-proposal-name {
+    font-size: 12.5px;
+    font-weight: 600;
+    color: var(--ink);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .memory-proposal-meta {
+    display: flex;
+    gap: 4px;
+    flex-shrink: 0;
+  }
+  .memory-proposal-body {
+    font-size: 12px;
+    color: var(--ink-1);
+    max-height: 160px;
+    overflow-y: auto;
+  }
+  .memory-proposal-body pre {
+    max-height: 120px;
+  }
+  .memory-proposal-foot {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+  }
+  .memory-proposal-time {
+    font-size: 10.5px;
+    color: var(--ink-3);
+  }
+  .memory-proposal-actions {
+    display: flex;
+    gap: 6px;
+  }
+  .mp-btn {
+    font-size: 11.5px;
+    font-weight: 600;
+    padding: 3px 9px;
+    border-radius: 6px;
+    border: 1px solid var(--line-strong);
+    background: var(--card);
+    color: var(--ink-1);
+    cursor: pointer;
+  }
+  .mp-btn:hover:not(:disabled) {
+    background: var(--card-subtle);
+  }
+  .mp-btn:disabled {
+    opacity: 0.55;
+    cursor: default;
+  }
+  .mp-approve {
+    border-color: var(--accent);
+    background: var(--accent);
+    color: #fff;
+  }
+  .mp-approve:hover:not(:disabled) {
+    background: var(--accent);
+    opacity: 0.88;
+  }
+  .memory-badge {
+    background: var(--accent);
+    color: #fff;
+  }
+  .mode-tab.active .memory-badge {
+    background: var(--ink);
+    color: var(--card);
+  }
   .snippet-card {
     background: var(--card);
     border: 1px solid var(--line);
@@ -3025,7 +3130,7 @@
         <span>💬</span> <span id="tab-sessions-label">Sessions</span>
       </button>
       <button type="button" class="mode-tab" id="tab-snippets" data-mode="snippets">
-        <span>📌</span> <span id="tab-snippets-label">Snippets</span> <span id="snippets-badge" class="snippets-badge" style="display:none">0</span>
+        <span>📌</span> <span id="tab-snippets-label">Snippets</span> <span id="snippets-badge" class="snippets-badge" style="display:none">0</span> <span id="memory-proposals-badge" class="snippets-badge memory-badge" style="display:none" title="">0</span>
       </button>
       <button type="button" class="mode-tab" id="tab-activity" data-mode="activity">
         <span>📊</span> <span id="tab-activity-label">Activity</span>
@@ -3136,6 +3241,9 @@
           <input type="search" id="snippet-q" placeholder="Search pinned snippets..." autocomplete="off">
         </div>
         <div id="snippet-lang-chips" class="snippet-lang-chips" style="display:none"></div>
+      </div>
+      <div id="memory-proposals" class="memory-proposals" style="display:none">
+        <div class="memory-proposals-title" id="memory-proposals-title"></div>
       </div>
       <div id="snippets-list" class="snippets-list"></div>
     </div>
@@ -3357,6 +3465,12 @@ const I18N = {
     snippetUnpinnedToast: "Сниппет удалён из базы знаний",
     noSnippets: "Закладок пока нет.",
     noSnippetsSub: "Нажмите 📌 Сниппет на сообщении агента или блоке кода, либо выделите текст мышью и нажмите правую кнопку мыши.",
+    memoryProposals: "🧠 Предложения памяти",
+    memoryProposalsBadge: "Предложения памяти ждут вашего решения",
+    memoryApprove: "✓ Сохранить", memoryReject: "✕ Отклонить",
+    memoryApprovedToast: "✓ Предложение сохранено в базу знаний",
+    memoryRejectedToast: "Предложение отклонено",
+    memoryFailedToast: "Не удалось сохранить решение",
     allLangs: "Все",
     alertNote: "Заметка", alertTip: "Совет", alertImportant: "Важно", alertWarning: "Предупреждение", alertCaution: "Осторожно",
     codeLines: "строк", codeCollapse: "Свернуть",
@@ -3471,6 +3585,12 @@ const I18N = {
     snippetUnpinnedToast: "Snippet removed from Knowledge Base",
     noSnippets: "No pinned snippets yet.",
     noSnippetsSub: "Click 📌 Pin on agent messages or code blocks to save key solutions here.",
+    memoryProposals: "🧠 Memory proposals",
+    memoryProposalsBadge: "Memory proposals waiting for your decision",
+    memoryApprove: "✓ Save", memoryReject: "✕ Reject",
+    memoryApprovedToast: "✓ Proposal saved to the knowledge base",
+    memoryRejectedToast: "Proposal rejected",
+    memoryFailedToast: "Failed to record the decision",
     allLangs: "All",
     alertNote: "Note", alertTip: "Tip", alertImportant: "Important", alertWarning: "Warning", alertCaution: "Caution",
     codeLines: "lines", codeCollapse: "Collapse",
@@ -3563,6 +3683,12 @@ const I18N = {
     snippetUnpinnedToast: "스니펫이 지식 베이스에서 삭제되었습니다",
     noSnippets: "고정된 스니펫이 없습니다.",
     noSnippetsSub: "에이전트 메시지나 코드 블록의 📌 고정 버튼을 눌러 중요한 솔루션을 여기에 저장하세요.",
+    memoryProposals: "🧠 메모리 제안",
+    memoryProposalsBadge: "메모리 제안이 사용자의 결정을 기다립니다",
+    memoryApprove: "✓ 저장", memoryReject: "✕ 거부",
+    memoryApprovedToast: "✓ 제안이 지식 베이스에 저장되었습니다",
+    memoryRejectedToast: "제안이 거부되었습니다",
+    memoryFailedToast: "결정을 기록하지 못했습니다",
     allLangs: "전체",
     alertNote: "참고", alertTip: "팁", alertImportant: "중요", alertWarning: "경고", alertCaution: "주의",
     codeLines: "줄", codeCollapse: "접기",
@@ -3655,6 +3781,12 @@ const I18N = {
     snippetUnpinnedToast: "スニペットをナレッジベースから削除しました",
     noSnippets: "固定されたスニペットはありません。",
     noSnippetsSub: "エージェントメッセージやコードブロックの 📌 ボタンを押して重要な解決策を保存してください。",
+    memoryProposals: "🧠 メモリ提案",
+    memoryProposalsBadge: "メモリ提案はあなたの承認を待っています",
+    memoryApprove: "✓ 保存", memoryReject: "✕ 却下",
+    memoryApprovedToast: "✓ 提案をナレッジベースに保存しました",
+    memoryRejectedToast: "提案を却下しました",
+    memoryFailedToast: "決定を記録できませんでした",
     allLangs: "すべて",
     alertNote: "ノート", alertTip: "ヒント", alertImportant: "重要", alertWarning: "警告", alertCaution: "注意",
     codeLines: "行", codeCollapse: "折りたたむ",
@@ -3747,6 +3879,12 @@ const I18N = {
     snippetUnpinnedToast: "代码片段已从知识库删除",
     noSnippets: "暂无收藏的代码片段。",
     noSnippetsSub: "点击代理消息或代码块上的 📌 按钮，将关键解决方案保存至此处。",
+    memoryProposals: "🧠 记忆提案",
+    memoryProposalsBadge: "记忆提案等待您的决定",
+    memoryApprove: "✓ 保存", memoryReject: "✕ 拒绝",
+    memoryApprovedToast: "✓ 提案已保存到知识库",
+    memoryRejectedToast: "提案已拒绝",
+    memoryFailedToast: "记录决定失败",
     allLangs: "全部",
     alertNote: "注意", alertTip: "提示", alertImportant: "重要", alertWarning: "警告", alertCaution: "小心",
     codeLines: "行", codeCollapse: "折叠",
@@ -3766,6 +3904,10 @@ document.documentElement.lang = lang;
 const LANG_NAMES = { en: "English", ko: "한국어", ja: "日本語", zh: "中文", ru: "Русский" };
 
 let availableTagsList = [];
+
+// Read by applyStaticStrings(), which runs before the queue code further down,
+// so the counter has to be declared here rather than next to its renderer.
+let memoryProposalsCount = 0;
 
 function renderAvailableTags() {
   const wrap = $("available-tags");
@@ -4037,6 +4179,7 @@ function applyStaticStrings() {
   if ($("ctx-forget-session-label")) $("ctx-forget-session-label").textContent = L.deleteFromIndex || "Delete from index";
   if ($("tab-sessions-label")) $("tab-sessions-label").textContent = L.sessionsTab || "Sessions";
   if ($("tab-snippets-label")) $("tab-snippets-label").textContent = L.snippetsTab || "Snippets";
+  if ($("memory-proposals")) renderMemoryProposalsLabels();
   if ($("tab-activity-label")) $("tab-activity-label").textContent = L.activityTab || "Activity";
   if ($("show-rewound-label")) $("show-rewound-label").textContent = L.showRewound || "↩ Rewound";
   if ($("act-nav-title")) $("act-nav-title").textContent = L.actNavTitle || "Navigation";
@@ -6718,6 +6861,8 @@ async function runSync(isAuto) {
 
     await loadStats();
     await refresh();
+    // The queue is polled on this existing tick rather than on its own timer.
+    refreshMemoryProposals();
   } catch (err) {
     console.error("Sync failed:", err);
     const timeEl = $("last-sync-time");
@@ -7440,6 +7585,7 @@ function switchSidebarMode(mode) {
     if (sidefootHint) sidefootHint.style.display = "none";
     if (sidefootCount) sidefootCount.style.display = "none";
     loadSnippets($("snippet-q")?.value || "", snippetsSelectedLang);
+    refreshMemoryProposals();
   } else {
     if (sessionControls) sessionControls.style.display = "";
     if (list) list.style.display = "";
@@ -7468,6 +7614,112 @@ async function refreshSnippetsBadge() {
       }
     }
   } catch (e) {}
+}
+
+/* ---------- memory proposals: an agent offered these, a person decides ---------- */
+
+// Only the strings change on a language switch; the count comes from the last poll.
+function renderMemoryProposalsLabels() {
+  const title = $("memory-proposals-title");
+  if (title) {
+    title.textContent = `${L.memoryProposals || "🧠 Memory proposals"} (${memoryProposalsCount})`;
+  }
+  const badge = $("memory-proposals-badge");
+  if (badge) {
+    badge.title = L.memoryProposalsBadge || "Memory proposals waiting for your decision";
+  }
+}
+
+async function refreshMemoryProposals() {
+  const box = $("memory-proposals");
+  if (!box) return;
+  let proposals;
+  try {
+    proposals = await jget("/api/memory/proposals?status=pending");
+  } catch (e) {
+    return;
+  }
+  const list = Array.isArray(proposals) ? proposals : [];
+  memoryProposalsCount = list.length;
+  // Drop the old cards but keep the title element; the queue is small by design.
+  box.querySelectorAll(".memory-proposal-card").forEach((n) => n.remove());
+
+  const badge = $("memory-proposals-badge");
+  if (badge) {
+    badge.textContent = String(list.length);
+    badge.style.display = list.length > 0 ? "inline-block" : "none";
+  }
+  renderMemoryProposalsLabels();
+  box.style.display = list.length > 0 ? "flex" : "none";
+  for (const p of list) box.appendChild(memoryProposalCard(p));
+}
+
+function memoryProposalCard(p) {
+  const card = el("div", "memory-proposal-card");
+
+  const head = el("div", "memory-proposal-head");
+  const name = el("div", "memory-proposal-name", p.title || "");
+  name.title = p.title || "";
+  head.appendChild(name);
+
+  const meta = el("div", "memory-proposal-meta");
+  if (p.tool) meta.appendChild(el("span", "snippet-card-badge tool", p.tool));
+  if (p.session_id) {
+    const link = el("button", "mp-btn", p.session_id.slice(0, 12));
+    link.type = "button";
+    link.title = p.session_id;
+    link.onclick = (e) => {
+      e.stopPropagation();
+      openSession(p.session_id);
+    };
+    meta.appendChild(link);
+  }
+  head.appendChild(meta);
+  card.appendChild(head);
+
+  // The body is agent-authored and untrusted: it goes through the markdown
+  // renderer, which escapes it, and never into innerHTML as raw text.
+  const body = el("div", "memory-proposal-body");
+  renderRichMarkdown(p.content || "", body);
+  card.appendChild(body);
+
+  const foot = el("div", "memory-proposal-foot");
+  foot.appendChild(el("span", "memory-proposal-time", p.created_at ? fmtDate(p.created_at) : ""));
+  const actions = el("div", "memory-proposal-actions");
+  const okBtn = el("button", "mp-btn mp-approve", L.memoryApprove || "✓ Save");
+  okBtn.type = "button";
+  const noBtn = el("button", "mp-btn", L.memoryReject || "✕ Reject");
+  noBtn.type = "button";
+  okBtn.onclick = () => decideMemoryProposal(p.id, true, okBtn, noBtn);
+  noBtn.onclick = () => decideMemoryProposal(p.id, false, okBtn, noBtn);
+  actions.append(okBtn, noBtn);
+  foot.appendChild(actions);
+  card.appendChild(foot);
+  return card;
+}
+
+async function decideMemoryProposal(id, approve, okBtn, noBtn) {
+  okBtn.disabled = true;
+  noBtn.disabled = true;
+  try {
+    await jpost(approve ? "/api/memory/approve" : "/api/memory/reject", { id });
+    showToast(
+      approve
+        ? L.memoryApprovedToast || "✓ Memory saved to the knowledge base"
+        : L.memoryRejectedToast || "Proposal rejected"
+    );
+    await refreshMemoryProposals();
+    if (approve) {
+      refreshSnippetsBadge();
+      if (currentSidebarMode === "snippets") {
+        loadSnippets($("snippet-q")?.value || "", snippetsSelectedLang);
+      }
+    }
+  } catch (e) {
+    showToast(L.memoryFailedToast || "Failed to record the decision");
+    okBtn.disabled = false;
+    noBtn.disabled = false;
+  }
 }
 
 function getSnippetDateBounds() {
@@ -7848,6 +8100,7 @@ function setupSnippetsControls() {
   });
 
   refreshSnippetsBadge();
+  refreshMemoryProposals();
 }
 
 /* ---------- activity heatmap & agent analytics ---------- */
