@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.4.1] - 2026-11-01 (WikiAgents)
+
+Git commit inspector dialog, collapsible commits in session headers, and sidebar filters for web chats and short/stub sessions.
+
+### Added
+- **Git commit inspector modal**: clicking a commit pill in the session header opens an interactive inspection dialog. It verifies commit status in the local Git repository, shows whether the commit is already pushed to GitHub or only exists locally, displays author/date metadata and changed files stat, provides a one-click SHA copy, and offers the exact `git push origin <branch>` command for unpushed commits.
+- **Collapsible commits accordion**: commit pills are neatly grouped under a `[⎇ Commits (N)]` button alongside Summary, Plan, and Files, keeping the session header clean and uncluttered.
+- **Web chats filter (`🌐 Веб-чаты`)**: a toggle checkbox in the sidebar filter bar to show or hide imported web chats (ChatGPT, Claude, Gemini, DeepSeek, etc.) across the session feed, search, and tool selector dropdown.
+- **Short sessions noise filter (`💬 Короткие`)**: a toggle checkbox to filter out empty queries (0-1 messages) or trivial 1-2 turn replies (<250 characters of assistant text without tool calls), eliminating noise from search and feed while strictly preserving starred favorites (⭐) and user notes (📝).
+
+### Fixed
+- **UI refresh when toggling the short filter**: resolved an unhandled JavaScript error when turning off the short sessions checkbox in the web UI.
+
 ## [1.4.0] - 2026-11-01 (WikiAgents)
 
 ChatGPT exports, an instant desktop window, and the gaps found by checking 1.3.0 against its specification.
