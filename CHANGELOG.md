@@ -1,23 +1,27 @@
 # Changelog
 
-## [1.3.0] - 2026-11-01 (WikiAgents)
+## [1.4.0] - 2026-11-01 (WikiAgents)
 
-Review fixes for 1.0→1.2.1 plus the features that followed from them.
+ChatGPT exports, an instant desktop window, and the gaps found by checking 1.3.0 against its specification.
+
+### Added
+- **ChatGPT exports (`gpt-web`)**: reads `conversations*.json` from a data export and
+  any file filed under a `gpt` folder in `web_session`. Follows the branch the chat
+  ended on, keeps thinking blocks, and leaves out citation markup, "Thought for N s"
+  recaps and hidden context.
+
+### Performance
+- **The desktop window opens without the two-second wait**: the app probed its port
+  with a connect, and Windows retries a refused loopback connection for about 2 s.
+  It now binds the port first and opens the index behind it, so the window no longer
+  waits for the server.
 
 ### Security
 - **A secret in a memory's title or tags is removed too**: `propose_memory` redacted
   only the body, so a token in the title reached the queue, the tool's reply and the
   backups. Redaction now also runs before the length cap, which could cut a secret
-  out of its own pattern. `remember` goes through the same check.
-- **Web API now proves the caller is our own UI**: every `/api/*` request must carry
-  the `X-WikiAgents: 1` header. A cross-site page cannot set it — `<img src>`, a form
-  post and top-level navigation send no custom headers, and a cross-origin `fetch`
-  that tries is stopped by a CORS preflight the server never answers. Before this, a
-  malicious page could read the whole index or trigger an export through
-  `/api/backup/run`.
-- **State-changing endpoints accept POST only**: `/api/backup/run`,
-  `/api/backup/restore`, `/api/backup/config`, `/api/forget` and
-  `/api/snippet/save|delete|rename` answer 405 to any other method.
+  out of its own pattern. `remember` goes through the same check. Memories already
+  stored are cleaned once on the next start; a backup pushed earlier keeps its history.
 
 ### Fixed
 - **A rejected memory stays rejected**: `memory approve` used to save it anyway, and
@@ -33,16 +37,32 @@ Review fixes for 1.0→1.2.1 plus the features that followed from them.
   so `user.json` and the like stay on the machine. `recombine` follows subfolders.
 - **A project's folder view is not cut short**: the 500-row limit applied to the whole
   repository before the UI narrowed it to the folder, so a busy repository could show
-  a subfolder as nearly empty. `/api/sessions` takes `folder=`; its rows and
-  `/api/projects` give `project_key` as stored, the repository root.
-- **The desktop window opens without the two-second wait**: the app probed its port
-  with a connect, and Windows retries a refused loopback connection for about 2 s.
-  It now binds the port first and opens the index behind it, so the window no longer
-  waits for the server.
+  a subfolder as nearly empty. `/api/sessions`, `/api/search` and `/api/trace` take
+  `folder=`, so the project filter lives on the server and the UI no longer normalizes
+  paths itself; rows and `/api/projects` give `project_key` as stored, the repository root.
+- **The build has no manifest warnings**: each binary has its own source file instead
+  of three targets sharing one.
 - **`wikiagents app` no longer panics at startup**: the window's event loop ran on
   the worker thread; it now runs on the main thread.
 - **A long sync is not reported as failed**: the UI's new 30-second request timeout
   does not apply to `/api/sync`.
+
+## [1.3.0] - 2026-11-01 (WikiAgents)
+
+Review fixes for 1.0→1.2.1 plus the features that followed from them.
+
+### Security
+- **Web API now proves the caller is our own UI**: every `/api/*` request must carry
+  the `X-WikiAgents: 1` header. A cross-site page cannot set it — `<img src>`, a form
+  post and top-level navigation send no custom headers, and a cross-origin `fetch`
+  that tries is stopped by a CORS preflight the server never answers. Before this, a
+  malicious page could read the whole index or trigger an export through
+  `/api/backup/run`.
+- **State-changing endpoints accept POST only**: `/api/backup/run`,
+  `/api/backup/restore`, `/api/backup/config`, `/api/forget` and
+  `/api/snippet/save|delete|rename` answer 405 to any other method.
+
+### Fixed
 - **The CLI stopped overflowing its own stack**: Windows gives the main thread
   1 MB, and the debug frame of `main` — clap's parser plus the locals of every
   argument variant, all in one function — runs past it. A single new subcommand
@@ -227,10 +247,6 @@ Review fixes for 1.0→1.2.1 plus the features that followed from them.
   had grown past the limit was a push that finally failed.
 
 ### Added
-- **ChatGPT exports (`gpt-web`)**: reads `conversations*.json` from a data export and
-  any file filed under a `gpt` folder in `web_session`. Follows the branch the chat
-  ended on, keeps thinking blocks, and leaves out citation markup, "Thought for N s"
-  recaps and hidden context.
 - **`wikiagents hook install-git`** puts a two-line `prepare-commit-msg` hook in
   a repository, and **`wikiagents hook prepare-commit-msg <file> [source]`**
   appends `AI-Session: <session id>` to the message — from

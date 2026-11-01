@@ -963,6 +963,7 @@ pub fn open() -> Result<Connection> {
     reparse_large_for_provenance(&conn)?;
     reparse_after_reader_fixes(&conn)?;
     reparse_stale_reader_versions(&conn)?;
+    redact_stored_memories(&conn)?;
     Ok(conn)
 }
 
@@ -4245,6 +4246,52 @@ pub fn save_memory_snippet(
     )
 }
 
+/// Clean what agents stored before every field was redacted: titles and tags of
+/// memories went in as written. Once per index. Snippets a person saved are theirs
+/// and stay untouched.
+fn redact_stored_memories(conn: &Connection) -> Result<()> {
+    const KEY: &str = "stored_memories_redacted";
+    let done: Option<String> = conn
+        .query_row("SELECT value FROM meta WHERE key = ?1", [KEY], |r| r.get(0))
+        .optional()?;
+    if done.is_some() {
+        return Ok(());
+    }
+    ensure_snippets_table(conn)?;
+    let mut updates = Vec::new();
+    let mut collect = |select: &str, update: &'static str| -> Result<()> {
+        let mut stmt = conn.prepare(select)?;
+        let rows = stmt.query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
+            ))
+        })?;
+        for row in rows {
+            let (id, title, content, tags) = row?;
+            let clean = [&title, &content, &tags].map(|s| crate::redact::redact(s).into_owned());
+            if clean[0] != title || clean[1] != content || clean[2] != tags {
+                let [title, content, tags] = clean;
+                updates.push((update, vec![id, title, content, tags]));
+            }
+        }
+        Ok(())
+    };
+    collect(
+        "SELECT id, title, content, tags FROM memory_proposals",
+        "UPDATE memory_proposals SET title = ?2, content = ?3, tags = ?4 WHERE id = ?1",
+    )?;
+    collect(
+        "SELECT CAST(id AS TEXT), title, content, COALESCE(tags, '') FROM snippets
+         WHERE role = 'assistant_memory'",
+        "UPDATE snippets SET title = ?2, content = ?3, tags = NULLIF(?4, '')
+         WHERE id = CAST(?1 AS INTEGER)",
+    )?;
+    apply_without_waiting(conn, KEY, "1", &updates)
+}
+
 /// Write an approved proposal to the knowledge base. Idempotent: a proposal that
 /// already carries a snippet answers with that id instead of saving a second one.
 /// A rejected one stays rejected: that decision is the record the queue keeps.
@@ -5067,18 +5114,27 @@ pub struct ProjectRow {
 /// its repository; the comparison has to happen on the folder itself.
 pub fn project_folders(conn: &Connection, folder: &str) -> Result<Vec<String>> {
     let key = crate::util::project_key(folder);
-    let below = format!("{key}/");
-    let mut stmt = conn.prepare("SELECT DISTINCT project FROM files WHERE project != ''")?;
+    let mut stmt = conn.prepare("SELECT DISTINCT project FROM files")?;
     let projects = stmt.query_map([], |r| r.get::<_, String>(0))?;
     let mut out = Vec::new();
     for project in projects {
         let project = project?;
-        let candidate = crate::util::project_key(&project);
-        if candidate == key || candidate.starts_with(&below) {
+        if project_in_folder(&project, &key) {
             out.push(project);
         }
     }
     Ok(out)
+}
+
+/// Whether a stored project is the folder `folder_key` (a `util::project_key`) or
+/// below it. An empty key is the "no project" view, not a root of everything.
+pub fn project_in_folder(project: &str, folder_key: &str) -> bool {
+    let candidate = crate::util::project_key(project);
+    candidate == folder_key
+        || (!folder_key.is_empty()
+            && candidate
+                .strip_prefix(folder_key)
+                .is_some_and(|rest| rest.starts_with('/')))
 }
 
 pub fn projects(conn: &Connection) -> Result<Vec<ProjectRow>> {

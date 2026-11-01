@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="icon" href="data:,">
-<title>WikiAgents v1.3.0</title>
+<title>WikiAgents v1.4.0</title>
 <style>
   :root {
     --bg: #faf9f6;
@@ -3108,7 +3108,7 @@
 <div class="layout">
   <aside id="sidebar">
     <div class="brand">
-      <h1>wikiagents <span class="app-version" id="app-version">v1.3.0</span></h1>
+      <h1>wikiagents <span class="app-version" id="app-version">v1.4.0</span></h1>
       <div class="stats" id="stats">loading index&hellip;</div>
     </div>
     <div class="sync-row">
@@ -4356,17 +4356,6 @@ function cleanProjectPath(proj) {
     p = p.replaceAll("/", "\\");
   }
   return (p === "-" || p === "null" || p === "undefined") ? "" : p;
-}
-
-function normProjectPath(p) {
-  if (!p) return "";
-  let s = cleanProjectPath(p);
-  s = s.replaceAll("\\", "/");
-  while (s.includes("//")) {
-    s = s.replaceAll("//", "/");
-  }
-  s = s.replace(/\/+$/, "");
-  return s.toLowerCase().trim();
 }
 
 function dayGroup(iso) {
@@ -6398,13 +6387,11 @@ async function refresh() {
   const tagParam = currentTag ? `&tag=${encodeURIComponent(currentTag)}` : "";
   let projParam = "";
   let folderParam = "";
-  if (currentProject) {
-    // The server normalizes both. A search takes the whole project; the listing
-    // takes the folder that was clicked, so its limit applies to that folder and
-    // not to a repository whose other folders would use it up.
-    projParam = `&project=${encodeURIComponent(currentProject)}`;
-    folderParam = `&folder=${encodeURIComponent(currentProject)}`;
-  }
+  // The server normalizes both, and an empty folder is "no project". A search
+  // narrows by project in SQL and then by folder; the listing goes by folder alone,
+  // so its limit is not used up by the rest of the repository.
+  if (currentProject) projParam = `&project=${encodeURIComponent(currentProject)}`;
+  if (currentProject !== null) folderParam = `&folder=${encodeURIComponent(currentProject)}`;
   // The listing is sorted by the server so "created" and "message count"
   // cover every session, not just the 500 most recently active.
   const sortMode = $("sort-mode") ? $("sort-mode").value : "last_active";
@@ -6430,7 +6417,7 @@ async function refresh() {
   const isSearchActive = searchKeywords.length > 0 || inputVal.length >= 2 || !!currentFileTrace;
 
   if (currentFileTrace) {
-    items = await jget(`/api/trace?path=${encodeURIComponent(currentFileTrace)}&limit=500${t}${sParam}${uParam}`);
+    items = await jget(`/api/trace?path=${encodeURIComponent(currentFileTrace)}&limit=500${t}${folderParam}${sParam}${uParam}`);
     if (tool) {
       items = items.filter((row) => row.tool === tool);
     }
@@ -6438,7 +6425,7 @@ async function refresh() {
     // Mode 3: Keyword filter chips via '+' -> cross-message session intersection!
     const sessionTermsParam = `&session_terms=${encodeURIComponent(searchKeywords.join(","))}`;
     const qParam = inputVal ? `&q=${encodeURIComponent(inputVal)}` : "";
-    items = await jget(`/api/search?limit=500${sessionTermsParam}${qParam}${t}${r}${tagParam}${projParam}${sParam}${uParam}`);
+    items = await jget(`/api/search?limit=500${sessionTermsParam}${qParam}${t}${r}${tagParam}${projParam}${folderParam}${sParam}${uParam}`);
   } else if (inputVal.length >= 2) {
     const commitPrefixMatch = inputVal.match(/^(?:commit|sha):([0-9a-f]{7,40})$/i);
     const isDirectCommitSha = /^[0-9a-f]{7,40}$/i.test(inputVal) && /[a-f]/i.test(inputVal);
@@ -6455,7 +6442,7 @@ async function refresh() {
     }
     if (items.length === 0) {
       // Mode 1 & 2: Search bar input -> strictly within one message!
-      items = await jget(`/api/search?q=${encodeURIComponent(inputVal)}${t}${r}${tagParam}${projParam}${sParam}${uParam}`);
+      items = await jget(`/api/search?q=${encodeURIComponent(inputVal)}${t}${r}${tagParam}${projParam}${folderParam}${sParam}${uParam}`);
     }
   } else if (currentTag) {
     items = await jget(`/api/sessions?limit=500${t}${tagParam}${folderParam}${sParam}${uParam}${subParam}${sortParam}`);
@@ -6467,16 +6454,6 @@ async function refresh() {
   if (currentOnlyFavorites) {
     items = items.filter((row) => favoriteSet.has(row.id));
   }
-  // The server already filters by project key; this keeps the exact folder or a
-  // root of it for the modes that come back from a file trace or a search.
-  if (currentProject !== null) {
-    const targetNorm = normProjectPath(currentProject);
-    items = items.filter((row) => {
-      const n = (row.folder_key ?? normProjectPath(row.project)).toLowerCase();
-      return n === targetNorm || n.startsWith(targetNorm + "/");
-    });
-  }
-
   // Client-side date filter for the modes the server does not filter by date
   // (file trace). Same rule as the server: the session was active within the
   // window - started before its end, last active after its start.

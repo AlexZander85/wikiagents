@@ -580,3 +580,46 @@ fn a_decision_stands_and_no_field_keeps_a_secret() {
         "a saved note cannot be reported as rejected"
     );
 }
+
+/// Memories written before every field was redacted are cleaned once, on open.
+#[test]
+fn memories_stored_with_a_secret_are_cleaned_on_the_next_open() {
+    let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let dir = std::env::temp_dir().join("sessionwiki-test-memory-clean");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::env::set_var("SESSIONWIKI_DATA", &dir);
+    let token = "ghp_abcdefghijklmnopqrstuvwxyz0123456789";
+    {
+        let conn = sessionwiki::index::open().unwrap();
+        conn.execute(
+            "INSERT INTO memory_proposals(id, title, content, created_at)
+             VALUES ('old', ?1, 'body', '2026-01-01')",
+            [format!("token {token}")],
+        )
+        .unwrap();
+        for (role, title) in [("assistant_memory", "agent"), ("user", "person")] {
+            conn.execute(
+                "INSERT INTO snippets(session_id, message_idx, title, content, tags, created_at, role)
+                 VALUES ('global', 0, ?1, ?2, NULL, '2026-01-01', ?3)",
+                [format!("{title} {token}"), "body".to_string(), role.to_string()],
+            )
+            .unwrap();
+        }
+        conn.execute(
+            "DELETE FROM meta WHERE key = 'stored_memories_redacted'",
+            [],
+        )
+        .unwrap();
+    }
+    let conn = sessionwiki::index::open().unwrap();
+    let title_of = |sql: &str| -> String { conn.query_row(sql, [], |r| r.get(0)).unwrap() };
+    assert!(!title_of("SELECT title FROM memory_proposals WHERE id = 'old'").contains(token));
+    assert!(
+        !title_of("SELECT title FROM snippets WHERE role = 'assistant_memory'").contains(token)
+    );
+    assert!(
+        title_of("SELECT title FROM snippets WHERE role = 'user'").contains(token),
+        "a snippet a person saved is theirs"
+    );
+}

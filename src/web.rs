@@ -408,7 +408,7 @@ fn api_sessions(conn: &Connection, query: &str) -> Result<Boxed> {
         .unwrap_or(500);
     let include_subagents = param(query, "subagents").is_some_and(|v| v == "1" || v == "true")
         || param(query, "all").is_some_and(|v| v == "1" || v == "true");
-    let folders = param(query, "folder")
+    let folders = folder_param(query)
         .map(|folder| index::project_folders(conn, &folder))
         .transpose()?;
     let rows = index::recent_range(
@@ -508,7 +508,8 @@ fn api_search(conn: &Connection, query: &str) -> Result<Boxed> {
         if !qt.is_empty() {
             all_terms.push(qt);
         }
-        let rows = index::search_sessions_multi_terms(conn, &all_terms, limit, tool, scope)?;
+        let mut rows = index::search_sessions_multi_terms(conn, &all_terms, limit, tool, scope)?;
+        rows.retain(|r| in_folder(&folder_param(query), &r.project));
         return json_response(json!(rows
             .iter()
             .map(|r| {
@@ -523,7 +524,8 @@ fn api_search(conn: &Connection, query: &str) -> Result<Boxed> {
 
     // Default search mode: strictly within one message (FTS5 rank & snippet)
     let project = param(query, "project");
-    let hits = index::search_scoped(conn, qt, limit, tool, project.as_deref(), scope)?;
+    let mut hits = index::search_scoped(conn, qt, limit, tool, project.as_deref(), scope)?;
+    hits.retain(|h| in_folder(&folder_param(query), &h.row.project));
     json_response(json!(hits
         .iter()
         .map(|h| {
@@ -547,7 +549,9 @@ fn api_trace(conn: &Connection, query: &str) -> Result<Boxed> {
     let limit = param(query, "limit")
         .and_then(|v| v.parse().ok())
         .unwrap_or(200);
-    let hits = index::sessions_for_file(conn, &path, limit)?;
+    let folder = folder_param(query);
+    let mut hits = index::sessions_for_file(conn, &path, limit)?;
+    hits.retain(|(r, _)| in_folder(&folder, &r.project));
     json_response(json!(hits
         .iter()
         .map(|(r, matched)| {
@@ -1337,6 +1341,21 @@ fn row_json(r: &index::SessionRow) -> serde_json::Value {
         );
     }
     val
+}
+
+/// The folder a view is narrowed to, as a key. Unlike other parameters an empty
+/// value means something: the view of sessions with no project.
+fn folder_param(query: &str) -> Option<String> {
+    query
+        .split('&')
+        .find_map(|kv| kv.strip_prefix("folder="))
+        .map(|v| crate::util::project_key(&url_decode(v)))
+}
+
+fn in_folder(folder: &Option<String>, project: &str) -> bool {
+    folder
+        .as_deref()
+        .is_none_or(|key| index::project_in_folder(project, key))
 }
 
 fn param(query: &str, key: &str) -> Option<String> {

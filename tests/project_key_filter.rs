@@ -182,3 +182,15 @@ fn a_folder_listing_spends_its_limit_on_that_folder() {
     .unwrap();
     assert!(none.is_empty(), "a folder nothing lives in lists nothing");
 }
+
+#[test]
+fn a_folder_contains_itself_and_what_is_below_it_and_nothing_else() {
+    let key = sessionwiki::util::project_key("/repo/x");
+    assert!(index::project_in_folder("/repo/x/", &key));
+    assert!(index::project_in_folder("/repo/x/sub", &key));
+    assert!(!index::project_in_folder("/repo/x-other", &key));
+    assert!(!index::project_in_folder("/repo", &key));
+    // The "no project" view is not a root of every absolute path.
+    assert!(index::project_in_folder("", ""));
+    assert!(!index::project_in_folder("/repo/x", ""));
+}
