@@ -194,6 +194,11 @@ progress on the `fix/review-1.3` branch; this section grows as each phase lands.
   `<data_dir>/sessionwiki/index.db` exist it warns that the CLI and the GUI may be
   reading different bases — the usual cause of «my sessions disappeared». Which
   one is used did not change.
+- **The backup reports what it weighs**: `wikiagents backup` status and the backup
+  dialog show the repository size — packed objects, loose objects, files and the
+  commit count — from `git count-objects -v`, and mark it amber above 800 MB or
+  red above GitHub's recommended 1 GB. Before this, the only sign that the export
+  had grown past the limit was a push that finally failed.
 
 ### Added
 - **`wikiagents hook install-git`** puts a two-line `prepare-commit-msg` hook in
@@ -239,6 +244,23 @@ progress on the `fix/review-1.3` branch; this section grows as each phase lands.
   and a chat re-exported to a second file is not archived as a deleted session
   while its first export is still on disk
   (`index::a_re_exported_chat_is_not_treated_as_a_deleted_session`).
+- **`wikiagents backup --squash-history`, and «🗜️ Свернуть историю» in the backup
+  dialog**: when the export repo has accumulated years of per-run commits, one
+  commit can replace them — the files stay exactly as they are, only the history
+  goes. It is deliberately the only history-rewriting operation in the crate and
+  it is never automatic: it requires a clean staging directory whose `main` equals
+  `origin/main` (otherwise it refuses and says to run `--restore` or `--push`
+  first), asks for confirmation — typed as `yes` in the CLI, a checkbox in the UI —
+  and by default keeps the old history reachable on an `archive/<date>` branch
+  before force-pushing the single commit under `--force-with-lease`. A second
+  machine that still holds the old history recognises the squashed commit by its
+  `history squashed` message and adopts it instead of rebasing the folded commits
+  back on top. The date and archive branch are recorded in the config, shown in
+  the dialog, and written to the README. New tests: `tests/backup_squash.rs`
+  (three backups folded to one with every file and the archive branch intact, the
+  refusal when the two sides differ, the other machine backing up again after the
+  fold, and `repo_size` reading git's own numbers) against a bare repository in a
+  tempdir — no network, and never the user's own repo.
 
 ## [1.2.1] - 2026-10-31 (WikiAgents)
 

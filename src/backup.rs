@@ -29,6 +29,15 @@ pub const REPO_URL_KEY: &str = "github_backup_repo";
 pub const LAST_BACKUP_KEY: &str = "github_backup_last_at";
 pub const LAST_COMMIT_KEY: &str = "github_backup_last_commit";
 pub const LAST_STATUS_KEY: &str = "github_backup_last_status";
+pub const LAST_SQUASH_KEY: &str = "github_backup_last_squash_at";
+/// Which remote branch holds the history the last squash folded away, so a later
+/// backup can say so in the README it rewrites.
+pub const LAST_ARCHIVE_KEY: &str = "github_backup_last_archive_branch";
+
+/// The first line of the squash commit. Another machine reads it to tell a
+/// folded history apart from a broken one, so the wording is a contract, not
+/// prose — see `adopt_squashed_history`.
+pub const SQUASH_MARK: &str = "history squashed";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BackupConfig {
@@ -36,6 +45,9 @@ pub struct BackupConfig {
     pub last_backup_at: Option<i64>,
     pub last_commit: Option<String>,
     pub last_status: Option<String>,
+    /// When history was last folded into one commit, so the UI can stop
+    /// recommending it for a while.
+    pub last_squash_at: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -191,12 +203,14 @@ pub fn get_backup_config(conn: &Connection) -> Result<BackupConfig> {
     let last_backup_at = get_meta(conn, LAST_BACKUP_KEY)?.and_then(|s| s.parse::<i64>().ok());
     let last_commit = get_meta(conn, LAST_COMMIT_KEY)?;
     let last_status = get_meta(conn, LAST_STATUS_KEY)?;
+    let last_squash_at = get_meta(conn, LAST_SQUASH_KEY)?.and_then(|s| s.parse::<i64>().ok());
 
     Ok(BackupConfig {
         repo_url,
         last_backup_at,
         last_commit,
         last_status,
+        last_squash_at,
     })
 }
 
@@ -283,6 +297,108 @@ pub fn resolve_backup_dir() -> Result<PathBuf> {
     let backup_dir = base.join("backup_repo");
     fs::create_dir_all(&backup_dir)?;
     Ok(backup_dir)
+}
+
+/// How much a backup repository costs, split the way git itself splits it:
+/// packed history, objects not yet packed, and the working files that get
+/// committed. GitHub starts complaining about a repository around 1 GB, and the
+/// history is what grows without anyone noticing — every backup is a commit.
+#[derive(Debug, Clone, Copy, Default, Serialize)]
+pub struct RepoSize {
+    pub pack_bytes: u64,
+    pub loose_bytes: u64,
+    pub working_bytes: u64,
+    pub commits: i64,
+}
+
+impl RepoSize {
+    pub fn total_bytes(&self) -> u64 {
+        self.pack_bytes
+            .saturating_add(self.loose_bytes)
+            .saturating_add(self.working_bytes)
+    }
+}
+
+/// Where a repository stands against GitHub's soft limit. `Warn` says there is
+/// still room to act; `Critical` says the next few backups may be rejected.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SizeLevel {
+    Ok,
+    Warn,
+    Critical,
+}
+
+/// 800 MB — the point where «сверните историю» is still a suggestion rather than
+/// a fix for a push that has already started failing.
+pub const PACK_WARN_BYTES: u64 = 800 * 1024 * 1024;
+/// GitHub's recommended repository size.
+pub const PACK_LIMIT_BYTES: u64 = 1024 * 1024 * 1024;
+
+pub fn size_level(pack_bytes: u64) -> SizeLevel {
+    if pack_bytes >= PACK_LIMIT_BYTES {
+        SizeLevel::Critical
+    } else if pack_bytes >= PACK_WARN_BYTES {
+        SizeLevel::Warn
+    } else {
+        SizeLevel::Ok
+    }
+}
+
+/// `git count-objects -v` (its `size`/`size-pack` are in KiB),
+/// `git rev-list --count HEAD` and the size of the files that would be
+/// committed. A repository without commits answers 0 rather than failing: an
+/// empty staging clone is a normal state, not an error worth reporting.
+pub fn repo_size(dir: &Path) -> Result<RepoSize> {
+    let counters = run_git_cmd(dir, &["count-objects", "-v"])?;
+    let mut size = RepoSize {
+        working_bytes: working_tree_bytes(dir)?,
+        ..Default::default()
+    };
+    for line in counters.lines() {
+        let Some((key, value)) = line.split_once(':') else {
+            continue;
+        };
+        let kib = value.trim().parse::<u64>().unwrap_or(0);
+        match key.trim() {
+            "size-pack" => size.pack_bytes = kib.saturating_mul(1024),
+            "size" => size.loose_bytes = kib.saturating_mul(1024),
+            _ => {}
+        }
+    }
+    size.commits = run_git_cmd(dir, &["rev-list", "--count", "HEAD"])
+        .ok()
+        .and_then(|s| s.trim().parse::<i64>().ok())
+        .unwrap_or(0);
+    Ok(size)
+}
+
+/// Everything that ends up in a commit, `.git` excluded - the same walk
+/// `count_files_in_dir` does. Symlinks are not followed, so the number describes
+/// this directory rather than whatever a link points at.
+fn working_tree_bytes(dir: &Path) -> Result<u64> {
+    let mut total = 0u64;
+    for entry in walkdir::WalkDir::new(dir)
+        .into_iter()
+        .filter_entry(|e| e.file_name() != ".git")
+        .flatten()
+    {
+        if entry.file_type().is_file() {
+            total = total.saturating_add(entry.metadata().map(|m| m.len()).unwrap_or(0));
+        }
+    }
+    Ok(total)
+}
+
+/// Size of the backup staging repository, or `None` when it does not exist yet -
+/// `doctor`-style status reporting must not fail because nothing has been backed
+/// up on this machine.
+pub fn backup_repo_size() -> Option<RepoSize> {
+    let dir = resolve_backup_dir().ok()?;
+    if !dir.join(".git").exists() {
+        return None;
+    }
+    repo_size(&dir).ok()
 }
 
 /// Execute full backup to GitHub:
@@ -373,7 +489,11 @@ pub fn run_backup(conn: &Connection, repo_url: &str) -> Result<BackupReport> {
 
         // 5. Generate manifest, README and restore scripts
         let (total_sessions, tool_stats) = query_session_stats(conn)?;
-        write_manifest_and_readme(&backup_dir, repo_url, total_sessions, &tool_stats)?;
+        let squash = SquashNote {
+            at: get_meta(conn, LAST_SQUASH_KEY)?.and_then(|s| s.parse().ok()),
+            archive_branch: get_meta(conn, LAST_ARCHIVE_KEY)?.filter(|s| !s.trim().is_empty()),
+        };
+        write_manifest_and_readme(&backup_dir, repo_url, total_sessions, &tool_stats, &squash)?;
         write_restore_scripts(&backup_dir)?;
 
         // 6. Git commit and push
@@ -606,6 +726,9 @@ fn push_integrating(dir: &Path) -> Result<()> {
     for attempt in 1..=3 {
         std::thread::sleep(std::time::Duration::from_secs(2 * attempt));
         run_git_cmd(dir, &["fetch", "origin", "main"])?;
+        if adopt_squashed_history(dir)? {
+            return Ok(());
+        }
         if let Err(e) = run_git_cmd(dir, &["rebase", "origin/main"]) {
             // Leave the staging tree where the user can see and fix it.
             let _ = run_git_cmd(dir, &["rebase", "--abort"]);
@@ -624,6 +747,226 @@ fn push_integrating(dir: &Path) -> Result<()> {
         "удалённый репозиторий содержит изменения с другой машины; \
          выполните restore или разрешите вручную ({last})"
     )
+}
+
+/// Whether `origin` already has a branch by this name. Used to pick an archive
+/// branch name that will not be rejected, and nowhere else.
+fn remote_has_branch(dir: &Path, branch: &str) -> bool {
+    run_git_cmd(dir, &["ls-remote", "--heads", "origin", branch])
+        .map(|out| !out.trim().is_empty())
+        .unwrap_or(false)
+}
+
+/// The other machine folded the history. Our commits and its `main` then share no
+/// ancestor, so a rebase would replay the entire old history back on top of the
+/// single commit — undoing the squash and pushing gigabytes again. Take its
+/// history as the base and keep our files as the change on top instead.
+///
+/// Only for a remote that says it squashed: `SQUASH_MARK` must appear in one of
+/// its last commit subjects, and there must be no common ancestor at all. Any
+/// other divergence is ordinary and goes back through `push_integrating`'s rebase.
+///
+/// Returns `true` when it pushed, `Ok(false)` when this is not a squash case.
+fn adopt_squashed_history(dir: &Path) -> Result<bool> {
+    if run_git_cmd(dir, &["merge-base", "origin/main", "HEAD"]).is_ok() {
+        return Ok(false);
+    }
+    let subjects =
+        run_git_cmd(dir, &["log", "--format=%s", "-n", "50", "origin/main"]).unwrap_or_default();
+    if !subjects.lines().any(|s| s.contains(SQUASH_MARK)) {
+        return Ok(false);
+    }
+    // --soft keeps the working tree and the index, so the files we just exported
+    // stay staged and become one commit over the squashed base.
+    run_git_cmd(dir, &["reset", "--soft", "origin/main"])?;
+    if !run_git_cmd(dir, &["status", "--porcelain"])?.is_empty() {
+        run_git_cmd(
+            dir,
+            &[
+                "commit",
+                "-m",
+                &format!(
+                    "wikiagents backup: {} (after a remote squash)",
+                    Utc::now().format("%Y-%m-%d %H:%M:%S UTC")
+                ),
+            ],
+        )?;
+    }
+    run_git_cmd(dir, &["push", "-u", "origin", "main"])?;
+    Ok(true)
+}
+
+/// What a squash changed, so the person who asked for it can see that it worked:
+/// the size and commit count on both sides, and where the old history went.
+#[derive(Debug, Clone, Serialize)]
+pub struct SquashReport {
+    pub before: RepoSize,
+    pub after: RepoSize,
+    pub archive_branch: Option<String>,
+    pub commit: Option<String>,
+    pub message: String,
+}
+
+/// Fold the backup repository's history into a single commit holding exactly the
+/// files of the current export.
+///
+/// Nothing calls this on its own — no size threshold, no schedule, no backup path.
+/// `keep_archive` pushes the current `main` to `archive/<date>` first, so the old
+/// history stays readable on the server; it still occupies space there until
+/// someone deletes that branch.
+///
+/// The push is the ONE place in this crate that rewrites a remote, and it is
+/// leased on the SHA fetched and verified a few lines above: if anyone moved
+/// `main` in between, git refuses and nothing is lost.
+pub fn squash_history(
+    conn: &Connection,
+    repo_url: &str,
+    keep_archive: bool,
+) -> Result<SquashReport> {
+    let repo_url = repo_url.trim();
+    if repo_url.is_empty() {
+        anyhow::bail!("Repository URL is empty - run: wikiagents backup --repo <url>");
+    }
+    let dir = resolve_backup_dir()?;
+    if !dir.join(".git").exists() {
+        anyhow::bail!("nothing has been backed up from this machine yet - run a backup first");
+    }
+    ensure_git_repo(&dir, repo_url)?;
+
+    let before = repo_size(&dir)?;
+
+    // Uncommitted work would be swept into the squash and its own history lost.
+    let dirty = run_git_cmd(&dir, &["status", "--porcelain"])?;
+    if !dirty.is_empty() {
+        anyhow::bail!(
+            "the staging repository has uncommitted changes ({} file(s)); \
+             run a backup first",
+            dirty.lines().count()
+        );
+    }
+
+    // Only a history that is already on the server can be folded: if either side
+    // has commits the other does not, one of the two machines has work to push or
+    // to pull, and squashing now would throw it away.
+    run_git_cmd(&dir, &["fetch", "origin", "main"])
+        .context("the remote has no main yet - run a backup before folding history")?;
+    let local = run_git_cmd(&dir, &["rev-parse", "HEAD"])?;
+    let remote = run_git_cmd(&dir, &["rev-parse", "origin/main"])?;
+    if local != remote {
+        let remote_ahead =
+            run_git_cmd(&dir, &["merge-base", "--is-ancestor", &local, &remote]).is_ok();
+        anyhow::bail!(
+            "local main and origin/main differ ({}); folding history only works on a \
+             repository that is already in sync - run {}",
+            if remote_ahead {
+                "the remote is ahead"
+            } else {
+                "this machine has unpushed commits"
+            },
+            if remote_ahead {
+                "wikiagents backup --restore"
+            } else {
+                "wikiagents backup --push"
+            }
+        );
+    }
+
+    // 1. Keep the old history reachable, under a name that cannot collide with a
+    //    squash from an earlier day.
+    let stamp = Utc::now().format("%Y-%m-%d").to_string();
+    let archive_branch = if keep_archive {
+        let mut name = format!("archive/{stamp}");
+        if remote_has_branch(&dir, &name) {
+            name = format!("archive/{}-{}", stamp, Utc::now().format("%H%M%S"));
+        }
+        run_git_cmd(
+            &dir,
+            &[
+                "push",
+                "origin",
+                &format!("main:refs/heads/{name}"),
+                "--quiet",
+            ],
+        )
+        .with_context(|| format!("could not push the archive branch {name}"))?;
+        Some(name)
+    } else {
+        None
+    };
+
+    // 2. One commit, holding the current files and nothing above it.
+    let (total_sessions, tool_stats) = query_session_stats(conn)?;
+    let commit_msg = format!(
+        "wikiagents backup: {SQUASH_MARK} {stamp} ({total_sessions} sessions across {} tools)",
+        tool_stats.len()
+    );
+    run_git_cmd(&dir, &["checkout", "--orphan", "squash-tmp"])?;
+    run_git_cmd(&dir, &["add", "-A"])?;
+    if run_git_cmd(&dir, &["ls-files"])?.trim().is_empty() {
+        // An unborn branch with no files: nothing to fold, and an empty commit
+        // would only hide that the repository is empty.
+        let _ = run_git_cmd(&dir, &["checkout", "-f", "main"]);
+        anyhow::bail!("the backup repository has no files to fold - it looks empty");
+    }
+    run_git_cmd(&dir, &["commit", "-m", &commit_msg])?;
+    run_git_cmd(&dir, &["branch", "-M", "main"])?;
+
+    // 3. The leased force push. `--force-with-lease=main:<sha>` compares the
+    //    remote against the SHA fetched above, so this can never overwrite a
+    //    branch nobody looked at.
+    run_git_cmd(
+        &dir,
+        &[
+            "push",
+            &format!("--force-with-lease=main:{remote}"),
+            "origin",
+            "main",
+        ],
+    )
+    .context(
+        "git отклонил принудительную отправку: origin/main изменился во время \
+         свёртки; локальная история цела, повторите бэкап",
+    )?;
+
+    // 4. Drop the local copies of the old objects, so the number reported below is
+    //    what the repository actually costs now.
+    let _ = run_git_cmd(&dir, &["reflog", "expire", "--expire=now", "--all"]);
+    let _ = run_git_cmd(&dir, &["gc", "--prune=now", "--aggressive"]);
+
+    let after = repo_size(&dir)?;
+    let commit = run_git_cmd(&dir, &["rev-parse", "--short", "HEAD"])
+        .ok()
+        .filter(|s| !s.trim().is_empty());
+    set_meta(conn, LAST_SQUASH_KEY, &Utc::now().timestamp().to_string())?;
+    match &archive_branch {
+        Some(name) => set_meta(conn, LAST_ARCHIVE_KEY, name)?,
+        None => set_meta(conn, LAST_ARCHIVE_KEY, "")?,
+    }
+
+    let mut message = format!(
+        "История свёрнута: было {} коммитов ({}), стал 1 коммит ({}).",
+        before.commits,
+        crate::util::human_size(before.pack_bytes),
+        crate::util::human_size(after.pack_bytes),
+    );
+    match &archive_branch {
+        Some(name) => message.push_str(&format!(
+            " Старая история сохранена в ветке {name} на сервере - она по-прежнему \
+             занимает место, пока ветку не удалить."
+        )),
+        None => message.push_str(
+            " Старая история не сохранена: на сервере больше нет ничего, кроме \
+             текущего снимка.",
+        ),
+    }
+
+    Ok(SquashReport {
+        before,
+        after,
+        archive_branch,
+        commit,
+        message,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -1538,11 +1881,20 @@ fn query_session_stats(conn: &Connection) -> Result<(i64, BTreeMap<String, i64>)
     Ok((total, stats))
 }
 
+/// What the generated README should record about the last history squash, so the
+/// repository explains its own one-commit history to whoever reads it next.
+#[derive(Debug, Clone, Default)]
+pub struct SquashNote {
+    pub at: Option<i64>,
+    pub archive_branch: Option<String>,
+}
+
 fn write_manifest_and_readme(
     dest_dir: &Path,
     repo_url: &str,
     total_sessions: i64,
     stats: &BTreeMap<String, i64>,
+    squash: &SquashNote,
 ) -> Result<()> {
     let now = Utc::now().to_rfc3339();
     let manifest = json!({
@@ -1571,6 +1923,22 @@ fn write_manifest_and_readme(
         total_sessions,
         env!("CARGO_PKG_VERSION")
     ));
+
+    if let Some(ts) = squash.at {
+        let when = chrono::DateTime::from_timestamp(ts, 0)
+            .map(|d| d.format("%Y-%m-%d %H:%M UTC").to_string())
+            .unwrap_or_else(|| ts.to_string());
+        md.push_str(&format!("## 🗜️ История свёрнута\n\n- **Дата:** `{when}`\n"));
+        match &squash.archive_branch {
+            Some(name) => md.push_str(&format!(
+                "- **Архив:** ветка `{name}` — в ней вся история до свёртки; \
+                 она занимает место на сервере, пока её не удалить.\n\n",
+            )),
+            None => md.push_str(
+                "- **Архив:** не создавался — до этой точки истории в репозитории нет.\n\n",
+            ),
+        }
+    }
 
     md.push_str(&format!(
         "## 📊 Статистика по инструментам ({} в этом бэкапе)\n\n",

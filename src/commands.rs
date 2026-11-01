@@ -2321,15 +2321,78 @@ fn project_label(p: &str) -> String {
     }
 }
 
-pub fn backup_cmd(
-    repo: Option<&str>,
-    test: bool,
-    status: bool,
-    push: bool,
-    restore: bool,
-) -> Result<()> {
+/// The same numbers the Backup dialog shows: what the repository costs today and
+/// how close that is to GitHub's recommended 1 GB.
+fn print_backup_size() {
+    use crate::backup::SizeLevel;
+    let Some(size) = crate::backup::backup_repo_size() else {
+        println!("  Repository size: nothing backed up from this machine yet");
+        return;
+    };
+    println!(
+        "  Repository size: {} (history: {} commit(s); packed {}, loose {}, files {})",
+        crate::util::human_size(size.total_bytes()),
+        size.commits,
+        crate::util::human_size(size.pack_bytes),
+        crate::util::human_size(size.loose_bytes),
+        crate::util::human_size(size.working_bytes),
+    );
+    let packed = crate::util::human_size(size.pack_bytes);
+    match crate::backup::size_level(size.pack_bytes) {
+        SizeLevel::Ok => {}
+        SizeLevel::Warn => println!(
+            "  [warn] packed history is at {packed} of the 1 GB GitHub recommends - \
+             run: wikiagents backup --squash-history"
+        ),
+        SizeLevel::Critical => println!(
+            "  [FAIL] packed history passed the 1 GB GitHub recommends ({packed}); \
+             pushes can be rejected - run: wikiagents backup --squash-history"
+        ),
+    }
+}
+
+/// The switches of `wikiagents backup`. Seven booleans in one signature would
+/// read as noise, and clap already hands them over by name.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct BackupFlags {
+    pub test: bool,
+    pub status: bool,
+    pub push: bool,
+    pub restore: bool,
+    pub squash_history: bool,
+    pub keep_archive: bool,
+    pub yes: bool,
+}
+
+/// Everything worth reading before agreeing to fold history: what the repository
+/// costs now, and what happens to the commits it holds. The same summary the
+/// Backup dialog shows in its confirmation.
+fn describe_squash(keep_archive: bool) {
+    match crate::backup::backup_repo_size() {
+        Some(size) => println!(
+            "  Repository now: {} ({} commits; packed {}, files {})",
+            crate::util::human_size(size.total_bytes()),
+            size.commits,
+            crate::util::human_size(size.pack_bytes),
+            crate::util::human_size(size.working_bytes),
+        ),
+        None => println!("  Repository now: nothing has been backed up from this machine"),
+    }
+    println!("  All commits on main become one commit holding the current files.");
+    println!(
+        "  History: {}",
+        if keep_archive {
+            "kept - the current history is pushed to archive/<date> first, \
+             and stays on the server until that branch is deleted"
+        } else {
+            "NOT kept - the remote loses every commit before the current one"
+        }
+    );
+}
+
+pub fn backup_cmd(repo: Option<&str>, flags: BackupFlags) -> Result<()> {
     let mut conn = index::open()?;
-    if test {
+    if flags.test {
         let repo_url = repo
             .map(String::from)
             .or_else(|| {
@@ -2357,12 +2420,12 @@ pub fn backup_cmd(
             "Repository URL saved: {}",
             crate::backup::strip_url_credentials(r)
         );
-        if !push && !status && !restore {
+        if !flags.push && !flags.status && !flags.restore && !flags.squash_history {
             return Ok(());
         }
     }
 
-    if restore {
+    if flags.restore {
         let repo_url = repo
             .map(String::from)
             .or_else(|| {
@@ -2394,7 +2457,53 @@ pub fn backup_cmd(
         return Ok(());
     }
 
-    if status || (!push && !restore && repo.is_none()) {
+    if flags.squash_history {
+        use std::io::Write;
+        let repo_url = repo
+            .map(String::from)
+            .or_else(|| {
+                crate::backup::get_backup_config(&conn)
+                    .ok()
+                    .map(|c| c.repo_url)
+            })
+            .unwrap_or_default();
+        if repo_url.is_empty() {
+            anyhow::bail!(
+                "Repository URL not configured. \
+                 Run: wikiagents backup --repo <url> --squash-history"
+            );
+        }
+        describe_squash(flags.keep_archive);
+        if !flags.yes {
+            print!("Type 'yes' to fold this history: ");
+            std::io::stdout().flush()?;
+            let mut answer = String::new();
+            std::io::stdin().read_line(&mut answer)?;
+            if answer.trim() != "yes" {
+                println!("Cancelled - nothing changed, locally or on the server.");
+                return Ok(());
+            }
+        }
+        // One run at a time: the squash works in the same staging directory a
+        // backup or restore would.
+        if !crate::backup::try_begin() {
+            anyhow::bail!("A backup or restore is already running. Wait for it to finish.");
+        }
+        let _guard = crate::backup::RunningGuard;
+        let report = crate::backup::squash_history(&conn, &repo_url, flags.keep_archive)?;
+        println!("✓ {}", report.message);
+        if let Some(commit) = &report.commit {
+            println!("  New commit: {commit}");
+        }
+        println!(
+            "  Size: {} -> {}",
+            crate::util::human_size(report.before.pack_bytes),
+            crate::util::human_size(report.after.pack_bytes)
+        );
+        return Ok(());
+    }
+
+    if flags.status || (!flags.push && !flags.restore && repo.is_none()) {
         let cfg = crate::backup::get_backup_config(&conn)?;
         println!("GitHub Backup Configuration:");
         println!(
@@ -2417,10 +2526,17 @@ pub fn backup_cmd(
         if let Some(status) = cfg.last_status {
             println!("  Status: {}", status);
         }
+        if let Some(ts) = cfg.last_squash_at {
+            let dt = chrono::DateTime::from_timestamp(ts, 0)
+                .map(|d| d.format("%Y-%m-%d %H:%M:%S UTC").to_string())
+                .unwrap_or_else(|| ts.to_string());
+            println!("  History squashed: {}", dt);
+        }
+        print_backup_size();
         return Ok(());
     }
 
-    if push {
+    if flags.push {
         let cfg = crate::backup::get_backup_config(&conn)?;
         if cfg.repo_url.is_empty() {
             anyhow::bail!(

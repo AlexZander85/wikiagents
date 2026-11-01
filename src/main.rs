@@ -406,6 +406,17 @@ enum Command {
         /// Restore full database from GitHub backup repository
         #[arg(long)]
         restore: bool,
+        /// Fold the backup repository's history into one commit. Never automatic,
+        /// and it rewrites the remote branch (see --keep-archive)
+        #[arg(long)]
+        squash_history: bool,
+        /// With --squash-history: keep the folded history in an archive/<date>
+        /// branch on the server instead of dropping it
+        #[arg(long)]
+        keep_archive: bool,
+        /// With --squash-history: do not ask first
+        #[arg(long)]
+        yes: bool,
     },
     /// Run as an MCP server over stdio (register: claude mcp add wikiagents -- wikiagents mcp)
     Mcp,
@@ -689,7 +700,21 @@ fn run() {
             status,
             push,
             restore,
-        } => commands::backup_cmd(repo.as_deref(), test, status, push, restore),
+            squash_history,
+            keep_archive,
+            yes,
+        } => commands::backup_cmd(
+            repo.as_deref(),
+            commands::BackupFlags {
+                test,
+                status,
+                push,
+                restore,
+                squash_history,
+                keep_archive,
+                yes,
+            },
+        ),
         Command::Mcp => {
             sessionwiki::mcp::serve();
             return;

@@ -9152,7 +9152,15 @@ setupSnippetsControls();
           <span style="color:var(--ink-2);">Последний коммит:</span>
           <span id="backup-last-commit" style="font-family:monospace;color:var(--ink-1);">-</span>
         </div>
+        <div style="display:flex;justify-content:space-between;margin-top:6px;">
+          <span style="color:var(--ink-2);">Размер репозитория:</span>
+          <span id="backup-repo-size" style="color:var(--ink-1);font-weight:600;">-</span>
+        </div>
       </div>
+
+      <!-- How close the backup is to GitHub's 1 GB, and the one action that
+           reduces it. Filled in from /api/backup/status. -->
+      <div id="backup-size-warn" style="display:none;font-size:12px;line-height:1.45;padding:8px 10px;border-radius:6px;margin-bottom:12px;border:1px solid var(--line);"></div>
 
       <div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;">
         <button type="button" id="backup-test-btn" class="sync-btn" style="padding:6px 12px;font-size:12px;" onclick="testBackupConnection()">
@@ -9164,6 +9172,26 @@ setupSnippetsControls();
         <button type="button" id="backup-restore-btn" class="sync-btn" style="padding:6px 14px;font-size:12px;font-weight:600;background:var(--card,#202124);color:var(--ink-1,#e8eaed);border:1px solid var(--line,#3c4043);" onclick="runRestoreNow()">
           📥 Восстановить из GitHub
         </button>
+        <button type="button" id="backup-squash-btn" class="sync-btn" style="padding:6px 12px;font-size:12px;" onclick="openSquashPanel()">
+          🗜️ Свернуть историю…
+        </button>
+      </div>
+
+      <!-- Confirmation for the one operation that rewrites the remote branch. It
+           states what is on the server now and what the fold will do, and never
+           runs by itself. -->
+      <div id="backup-squash-panel" style="display:none;border:1px solid var(--line);border-radius:6px;padding:10px;margin-bottom:12px;font-size:12px;line-height:1.45;background:var(--card-subtle);">
+        <div style="font-weight:600;margin-bottom:6px;">Свернуть историю репозитория?</div>
+        <div id="backup-squash-summary" style="color:var(--ink-2);margin-bottom:6px;"></div>
+        <div style="margin-bottom:6px;">Все коммиты <code>main</code> станут одним коммитом с текущими файлами. Удалённая ветка будет перезаписана — единственное место, где программа это делает.</div>
+        <label style="display:flex;gap:6px;align-items:flex-start;margin-bottom:8px;cursor:pointer;">
+          <input type="checkbox" id="backup-keep-archive" checked style="margin-top:2px;">
+          <span>Сохранить старую историю в ветке <code>archive/&lt;дата&gt;</code> на сервере (она продолжит занимать место, пока ветку не удалить)</span>
+        </label>
+        <div style="display:flex;gap:8px;">
+          <button type="button" class="sync-btn" onclick="closeSquashPanel()">Отмена</button>
+          <button type="button" id="backup-squash-confirm" class="sync-btn" style="font-weight:600;background:#ea4335;color:#fff;border-color:transparent;" onclick="runSquashNow()">Свернуть историю</button>
+        </div>
       </div>
 
       <div id="backup-log-box" style="display:none;background:#0d1117;color:#c9d1d9;font-family:monospace;font-size:11px;padding:8px 10px;border-radius:6px;max-height:140px;overflow-y:auto;white-space:pre-wrap;line-height:1.4;">
@@ -9190,6 +9218,7 @@ async function openBackupModal() {
       if (data.last_commit) {
         document.getElementById("backup-last-commit").textContent = data.last_commit;
       }
+      renderBackupSize(data);
       document.getElementById("backup-conn-status").textContent = data.repo_url ? "Настроен" : "Не настроен";
       document.getElementById("backup-conn-status").style.color = data.repo_url ? "#34a853" : "#ea4335";
 
@@ -9208,6 +9237,119 @@ async function openBackupModal() {
 
 function closeBackupModal() {
   document.getElementById("backup-modal-overlay").style.display = "none";
+}
+
+// The size of the backup repository, straight from git, plus the recommendation
+// to fold history when it is warranted. Nothing here acts on its own.
+let backupSquashState = null;
+
+function renderBackupSize(data) {
+  backupSquashState = data.repo_size || null;
+  const sizeEl = document.getElementById("backup-repo-size");
+  const warnEl = document.getElementById("backup-size-warn");
+  const size = data.repo_size;
+  if (!size) {
+    sizeEl.textContent = "нет локального репозитория бэкапа";
+    warnEl.style.display = "none";
+    return;
+  }
+  sizeEl.textContent = `${fmtBytes(size.total_bytes)} (история: ${size.commits} коммитов)`;
+
+  // GitHub's recommended limit is 1 GB, and the packed history is what grows on
+  // its own: every backup adds a commit.
+  const colors = {
+    warn: { border: "#fbbc04", text: "#fbbc04", bg: "rgba(251,188,4,0.08)" },
+    critical: { border: "#ea4335", text: "#ea4335", bg: "rgba(234,67,53,0.08)" },
+  };
+  const palette = colors[size.level];
+  if (palette) {
+    warnEl.style.display = "block";
+    warnEl.style.borderColor = palette.border;
+    warnEl.style.color = palette.text;
+    warnEl.style.background = palette.bg;
+    warnEl.textContent = size.level === "critical"
+      ? `Упакованная история превысила рекомендованный GitHub лимит 1 ГБ (сейчас ${fmtBytes(size.pack_bytes)}) — отправка может отклоняться. Сверните историю.`
+      : `Упакованная история приближается к рекомендуемому лимиту GitHub 1 ГБ (сейчас ${fmtBytes(size.pack_bytes)}) — сверните историю.`;
+    return;
+  }
+  // No size pressure: only remind when the last fold is far behind us.
+  const HALF_YEAR_MS = 183 * 24 * 60 * 60 * 1000;
+  const sinceSquash = data.last_squash_at ? data.last_squash_at * 1000 : null;
+  if (sinceSquash === null || Date.now() - sinceSquash > HALF_YEAR_MS) {
+    warnEl.style.display = "block";
+    warnEl.style.borderColor = "var(--line)";
+    warnEl.style.color = "var(--ink-2)";
+    warnEl.style.background = "transparent";
+    warnEl.textContent = sinceSquash === null
+      ? "История репозитория ещё не сворачивалась: каждый бэкап добавляет коммит, и со временем файл занимает всё больше места."
+      : "С последней свёртки истории прошло больше полугода — можно свернуть, если репозиторий растёт.";
+    return;
+  }
+  warnEl.style.display = "none";
+}
+
+function openSquashPanel() {
+  const panel = document.getElementById("backup-squash-panel");
+  const summary = document.getElementById("backup-squash-summary");
+  const size = backupSquashState;
+  summary.textContent = size
+    ? `Сейчас: ${fmtBytes(size.total_bytes)}, упакованная история ${fmtBytes(size.pack_bytes)}, ${size.commits} коммитов.`
+    : "Локального репозитория бэкапа на этой машине пока нет — сначала выполните выгрузку.";
+  panel.style.display = "block";
+}
+
+function closeSquashPanel() {
+  document.getElementById("backup-squash-panel").style.display = "none";
+}
+
+async function runSquashNow() {
+  const btn = document.getElementById("backup-squash-btn");
+  const confirmBtn = document.getElementById("backup-squash-confirm");
+  const logBox = document.getElementById("backup-log-box");
+  const url = document.getElementById("backup-repo-input").value.trim();
+  const keepArchive = document.getElementById("backup-keep-archive").checked;
+
+  btn.disabled = true;
+  confirmBtn.disabled = true;
+  confirmBtn.textContent = "Свёртка... ⏳";
+  logBox.style.display = "block";
+  logBox.textContent = "[1/5] Свёртка истории репозитория...\n";
+
+  try {
+    const res = await fetch("/api/backup/squash", {
+      method: "POST",
+      headers: { ...API_HEADERS, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        repo_url: url,
+        confirm: true,
+        keep_archive: keepArchive,
+      })
+    });
+    const data = await res.json();
+    if (!data.ok) {
+      logBox.textContent += "\nОШИБКА: " + (data.error || "Не удалось свернуть историю") + "\n";
+      resetSquashControls();
+      showToast(data.error || "Ошибка свёртки истории");
+      return;
+    }
+    closeSquashPanel();
+    startBackupPolling();
+  } catch(e) {
+    logBox.textContent += "\nОШИБКА СЕТИ: " + e.message + "\n";
+    resetSquashControls();
+    showToast("Сетевой сбой при свёртке истории");
+  }
+}
+
+function resetSquashControls() {
+  const btn = document.getElementById("backup-squash-btn");
+  const confirmBtn = document.getElementById("backup-squash-confirm");
+  if (btn) btn.disabled = false;
+  if (confirmBtn) {
+    confirmBtn.disabled = false;
+    confirmBtn.textContent = "Свернуть историю";
+  }
+  document.getElementById("backup-squash-panel").style.display = "none";
 }
 
 async function saveBackupConfig() {
@@ -9288,6 +9430,7 @@ function startBackupPolling() {
           restoreBtn.disabled = false;
           restoreBtn.textContent = "📥 Восстановить из GitHub";
         }
+        resetSquashControls();
 
         if (data.last_backup_at) {
           const d = new Date(data.last_backup_at * 1000);
@@ -9296,9 +9439,15 @@ function startBackupPolling() {
         if (data.last_commit) {
           document.getElementById("backup-last-commit").textContent = data.last_commit;
         }
+        // The size changed in every one of these runs, and a squash makes it the
+        // point of the whole dialog.
+        renderBackupSize(data);
 
         if (data.progress.error) {
           showToast("Ошибка: " + data.progress.error);
+        } else if (data.progress.stage === "История свёрнута") {
+          const last = (data.progress.log_messages || []).slice(-1)[0];
+          showToast(last || "История свёрнута в один коммит");
         } else if (data.progress.last_report && data.progress.last_report.success) {
           showToast("Бэкап успешно выгружен на GitHub!");
         } else if (data.progress.stage && data.progress.stage.includes("Восстановление завершено")) {

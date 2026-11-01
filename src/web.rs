@@ -222,6 +222,7 @@ fn handle_request(
         "/api/backup/test" => api_backup_test(&mut request, query),
         "/api/backup/run" => api_backup_run(conn, &mut request, query),
         "/api/backup/restore" => api_backup_restore(conn, &mut request, query),
+        "/api/backup/squash" => api_backup_squash(conn, &mut request, query),
         p if p.starts_with("/api/commit/") => {
             api_commit(conn, p.trim_start_matches("/api/commit/"))
         }
@@ -256,6 +257,7 @@ const POST_ONLY_PATHS: &[&str] = &[
     "/api/backup/config",
     "/api/backup/restore",
     "/api/backup/run",
+    "/api/backup/squash",
     "/api/forget",
     "/api/memory/approve",
     "/api/memory/reject",
@@ -1518,13 +1520,25 @@ fn api_backup_status(conn: &Connection) -> Result<Boxed> {
         .query_row("SELECT count(*) FROM files", [], |r| r.get(0))
         .unwrap_or(0);
     let progress = crate::backup::get_progress();
+    let repo_size = crate::backup::backup_repo_size().map(|s| {
+        json!({
+            "pack_bytes": s.pack_bytes,
+            "loose_bytes": s.loose_bytes,
+            "working_bytes": s.working_bytes,
+            "total_bytes": s.total_bytes(),
+            "commits": s.commits,
+            "level": crate::backup::size_level(s.pack_bytes),
+        })
+    });
     json_response(json!({
         "ok": true,
         "repo_url": cfg.repo_url,
         "last_backup_at": cfg.last_backup_at,
         "last_commit": cfg.last_commit,
         "last_status": cfg.last_status,
+        "last_squash_at": cfg.last_squash_at,
         "total_sessions": total,
+        "repo_size": repo_size,
         "progress": progress,
     }))
 }
@@ -1622,6 +1636,107 @@ fn api_backup_run(conn: &Connection, req: &mut tiny_http::Request, query: &str) 
     json_response(json!({
         "ok": true,
         "started": true,
+        "progress": crate::backup::get_progress(),
+    }))
+}
+
+/// Fold the backup repository's history into one commit. This is the only
+/// endpoint that rewrites what is on the server, so it needs `confirm: true` in
+/// the body — the dialog in the Backup window sends it after the person clicks
+/// through, and nothing else does. `keep_archive` defaults to true: dropping the
+/// old history is the choice that has to be made on purpose.
+fn api_backup_squash(
+    conn: &Connection,
+    req: &mut tiny_http::Request,
+    query: &str,
+) -> Result<Boxed> {
+    let mut body = String::new();
+    let _ = req.as_reader().read_to_string(&mut body);
+    let json_body: Option<serde_json::Value> = serde_json::from_str(&body).ok();
+    let confirmed = json_body
+        .as_ref()
+        .and_then(|v| v.get("confirm"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let keep_archive = json_body
+        .as_ref()
+        .and_then(|v| v.get("keep_archive"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true);
+    if !confirmed {
+        anyhow::bail!("Свёртка истории требует явного подтверждения (confirm: true).");
+    }
+
+    let repo_url = match json_body
+        .as_ref()
+        .and_then(|v| v.get("repo_url"))
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+        .or_else(|| param(query, "repo_url"))
+    {
+        Some(u) if !u.trim().is_empty() => u,
+        _ => {
+            let cfg = crate::backup::get_backup_config(conn)?;
+            if cfg.repo_url.trim().is_empty() {
+                anyhow::bail!("Репозиторий не настроен. Укажите URL GitHub репозитория.");
+            }
+            cfg.repo_url
+        }
+    };
+
+    // The same single slot as backup and restore: all three work in one staging
+    // directory, and a squash beside either would fold the other's half-written
+    // state into the new history.
+    if !crate::backup::try_begin() {
+        return json_response(json!({
+            "ok": true,
+            "started": true,
+            "already_running": true,
+            "progress": crate::backup::get_progress(),
+        }));
+    }
+    let guard = crate::backup::RunningGuard;
+
+    crate::backup::set_progress(|p| {
+        p.is_running = true;
+        p.step = 1;
+        p.total_steps = 5;
+        p.stage = "Свёртка истории репозитория...".to_string();
+        p.error = None;
+        p.last_report = None;
+        p.log_messages = vec!["[1/5] Проверка истории и состояния репозитория...".to_string()];
+    });
+
+    std::thread::spawn(move || {
+        // Released on every exit path, including the two early returns below.
+        let _guard = guard;
+        let db_p = match crate::index::db_path() {
+            Ok(p) => p,
+            Err(e) => {
+                crate::backup::set_error(&format!("Database path error: {e}"));
+                return;
+            }
+        };
+        let conn = match rusqlite::Connection::open(&db_p) {
+            Ok(c) => c,
+            Err(e) => {
+                crate::backup::set_error(&format!("Database open error: {e}"));
+                return;
+            }
+        };
+        match crate::backup::squash_history(&conn, &repo_url, keep_archive) {
+            Ok(report) => {
+                crate::backup::log_step(5, "Готово", &report.message);
+                crate::backup::set_progress(|p| p.stage = "История свёрнута".to_string());
+            }
+            Err(e) => crate::backup::set_error(&e.to_string()),
+        }
+    });
+
+    json_response(json!({
+        "ok": true,
+        "started": true,
+        "keep_archive": keep_archive,
         "progress": crate::backup::get_progress(),
     }))
 }
