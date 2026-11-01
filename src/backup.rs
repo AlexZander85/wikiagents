@@ -509,7 +509,9 @@ pub fn run_backup(conn: &Connection, repo_url: &str) -> Result<BackupReport> {
 
         let message = if status.is_empty() {
             commit_hash = run_git_cmd(&backup_dir, &["rev-parse", "--short", "HEAD"]).ok();
-            let _ = run_git_cmd(&backup_dir, &["push", "-u", "origin", "main"]);
+            // Nothing new here does not mean the remote has it: an earlier run
+            // may have committed and then failed to push.
+            push_integrating(&backup_dir)?;
             "Данные уже синхронизированы с GitHub, изменений нет.".to_string()
         } else {
             let commit_msg = format!(
@@ -570,8 +572,18 @@ pub fn run_backup(conn: &Connection, repo_url: &str) -> Result<BackupReport> {
         }
         Err(e) => {
             set_error(&e.to_string());
+            record_failure(conn, &e);
             Err(e)
         }
+    }
+}
+
+/// Leave the failure where `backup --status` reads it; "ok" from an earlier run
+/// would otherwise keep answering for this one. The error text has already been
+/// through `strip_url_credentials`.
+fn record_failure(conn: &Connection, err: &anyhow::Error) {
+    if let Err(meta_err) = set_meta(conn, LAST_STATUS_KEY, &format!("error: {err}")) {
+        eprintln!("could not record the backup status: {meta_err:#}");
     }
 }
 
@@ -667,6 +679,7 @@ pub fn run_restore(conn: &mut Connection, repo_url: &str) -> Result<RestoreRepor
         }
         Err(e) => {
             set_error(&e.to_string());
+            record_failure(conn, &e);
             Err(e)
         }
     }
@@ -1083,30 +1096,41 @@ pub fn export_curated_tables(conn: &Connection, dest_dir: &Path) -> Result<usize
 
 fn export_web_session_files(dest_dir: &Path) -> Result<usize> {
     let roots = crate::adapters::web_chat::web_session_roots();
-    let mut copied_files = Vec::new();
+    let mut copied_files: Vec<PathBuf> = Vec::new();
 
     for root in roots {
         if !root.exists() {
             continue;
         }
-        let entries = match fs::read_dir(&root) {
-            Ok(e) => e,
-            Err(_) => continue,
-        };
-
-        for entry in entries.flatten() {
+        for entry in walkdir::WalkDir::new(&root)
+            .into_iter()
+            .filter_map(Result::ok)
+        {
             let path = entry.path();
-            if !path.is_file() {
+            if !entry.file_type().is_file()
+                || path.extension().and_then(|s| s.to_str()) != Some("json")
+            {
                 continue;
             }
-            let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("");
-            if ext != "json" {
+            let Ok(relative) = path.strip_prefix(&root) else {
+                continue;
+            };
+            // A vendor's export folder also holds things that are not chats
+            // (ChatGPT's `user.json` is the account's personal data), and this
+            // copy leaves the machine: below the root only what the adapters read.
+            let nested = relative.components().count() > 1;
+            if nested && !crate::adapters::web_chat::is_chat_export(&root, path) {
                 continue;
             }
 
             let file_name = path.file_name().unwrap().to_string_lossy().to_string();
-            export_one_web_session(&path, dest_dir, &file_name)?;
-            copied_files.push(file_name);
+            let target_dir = match relative.parent() {
+                Some(parent) => dest_dir.join(parent),
+                None => dest_dir.to_path_buf(),
+            };
+            fs::create_dir_all(&target_dir)?;
+            export_one_web_session(path, &target_dir, &file_name)?;
+            copied_files.push(relative.to_path_buf());
         }
     }
 
@@ -1172,10 +1196,10 @@ fn write_recombine_helpers(dest_dir: &Path) -> Result<()> {
 import os, glob, re
 
 def recombine():
-    parts = glob.glob("*.part000")
+    parts = glob.glob("**/*.part000", recursive=True)
     for first_part in parts:
         base_name = first_part[:-8]
-        part_files = sorted(glob.glob(f"{base_name}.part*"))
+        part_files = sorted(glob.glob(f"{glob.escape(base_name)}.part*"))
         print(f"Recombining {len(part_files)} parts into {base_name}...")
         with open(base_name, "wb") as out:
             for p in part_files:
@@ -1190,11 +1214,11 @@ if __name__ == "__main__":
 
     // PowerShell script to do the same on Windows
     let ps_script = r#"# Recombines split .partNNN files into their original full-size files
-Get-ChildItem -Filter "*.part000" | ForEach-Object {
+Get-ChildItem -Path $PSScriptRoot -Recurse -Filter "*.part000" | ForEach-Object {
     $baseName = $_.Name.Substring(0, $_.Name.Length - 8)
-    $parts = Get-ChildItem -Filter "$baseName.part*" | Sort-Object Name
+    $parts = Get-ChildItem -LiteralPath $_.DirectoryName -Filter "$baseName.part*" | Sort-Object Name
     Write-Host "Recombining $($parts.Count) parts into $baseName..."
-    $out = [System.IO.File]::Create((Join-Path $PSScriptRoot $baseName))
+    $out = [System.IO.File]::Create((Join-Path $_.DirectoryName $baseName))
     foreach ($p in $parts) {
         $bytes = [System.IO.File]::ReadAllBytes($p.FullName)
         $out.Write($bytes, 0, $bytes.Length)
@@ -1889,6 +1913,16 @@ pub struct SquashNote {
     pub archive_branch: Option<String>,
 }
 
+/// The date in the manifest already on disk, if it says the same as `manifest`
+/// apart from the date.
+fn date_of_same_manifest(dest_dir: &Path, manifest: &Value) -> Option<String> {
+    let text = fs::read_to_string(dest_dir.join("manifest.json")).ok()?;
+    let mut old: Value = serde_json::from_str(&text).ok()?;
+    let date = old.get("created_at")?.as_str()?.to_string();
+    old["created_at"] = manifest["created_at"].clone();
+    (old == *manifest).then_some(date)
+}
+
 fn write_manifest_and_readme(
     dest_dir: &Path,
     repo_url: &str,
@@ -1896,8 +1930,8 @@ fn write_manifest_and_readme(
     stats: &BTreeMap<String, i64>,
     squash: &SquashNote,
 ) -> Result<()> {
-    let now = Utc::now().to_rfc3339();
-    let manifest = json!({
+    let mut now = Utc::now().to_rfc3339();
+    let mut manifest = json!({
         "wikiagents_version": env!("CARGO_PKG_VERSION"),
         "created_at": now,
         // Never the credential: this file is committed to the remote.
@@ -1905,6 +1939,13 @@ fn write_manifest_and_readme(
         "total_sessions": total_sessions,
         "sessions_by_tool": stats,
     });
+    // The date alone is not a change: keeping it is what lets a run with nothing
+    // new leave the tree clean, instead of adding a commit to the history on every
+    // backup and growing the repository for nothing.
+    if let Some(kept) = date_of_same_manifest(dest_dir, &manifest) {
+        manifest["created_at"] = json!(kept);
+        now = kept;
+    }
 
     fs::write(
         dest_dir.join("manifest.json"),

@@ -284,3 +284,40 @@ fn a_foreign_hook_is_reported_not_overwritten() {
         "and the user is told what to add: {printed}"
     );
 }
+
+/// A linked worktree has a git-dir of its own, and git does not look for hooks in
+/// it: a hook written there is installed, reported, and never run.
+#[test]
+fn install_git_from_a_linked_worktree_reaches_the_shared_hooks() {
+    if !git_available() {
+        eprintln!("skipping: git is not available");
+        return;
+    }
+    let dir = scratch("sessionwiki-test-install-git-worktree");
+    let repo = dir.join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+    let tree = dir.join("tree");
+    let added = Command::new("git")
+        .current_dir(&repo)
+        .args(["worktree", "add", "-q", "-b", "side"])
+        .arg(&tree)
+        .output()
+        .unwrap();
+    assert!(added.status.success());
+
+    let out = Command::new(BIN)
+        .current_dir(&tree)
+        .args(["hook", "install-git"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "install-git: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(repo.join(".git/hooks/prepare-commit-msg").is_file());
+    assert!(!repo
+        .join(".git/worktrees/tree/hooks/prepare-commit-msg")
+        .exists());
+}

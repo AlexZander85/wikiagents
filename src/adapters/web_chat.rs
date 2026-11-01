@@ -1319,6 +1319,12 @@ fn is_gpt_file(root: &Path, path: &Path) -> bool {
     name.starts_with("conversations") || filed_under(root, path, "gpt")
 }
 
+/// Whether a file under a session root is one some web adapter reads.
+pub fn is_chat_export(root: &Path, path: &Path) -> bool {
+    const VENDORS: [&str; 5] = ["claude", "deepseek", "gemini", "qwen", "glm"];
+    is_gpt_file(root, path) || VENDORS.iter().any(|v| filed_under(root, path, v))
+}
+
 fn discover_gpt_files() -> (Vec<PathBuf>, bool) {
     let mut files = Vec::new();
     let mut had_error = false;

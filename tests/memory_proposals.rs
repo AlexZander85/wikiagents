@@ -547,3 +547,36 @@ fn the_cli_lists_and_approves_a_proposal() {
         "the error names the id: {stderr}"
     );
 }
+
+#[test]
+fn a_decision_stands_and_no_field_keeps_a_secret() {
+    let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let dir = std::env::temp_dir().join("sessionwiki-test-memory-decision");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::env::set_var("SESSIONWIKI_DATA", &dir);
+    let conn = sessionwiki::index::open().unwrap();
+    let propose = |title: &str, tags: Option<&str>| {
+        sessionwiki::index::propose_memory(&conn, title, "body", tags, None, None).unwrap()
+    };
+
+    let token = "ghp_abcdefghijklmnopqrstuvwxyz0123456789";
+    propose(&format!("token {token}"), Some(&format!("t {token}")));
+    let queued = sessionwiki::index::list_memory_proposals(&conn, Some("pending")).unwrap();
+    assert!(!queued[0].title.contains(token), "{}", queued[0].title);
+    assert!(!queued[0].tags.contains(token), "{}", queued[0].tags);
+
+    let rejected = propose("rejected", None);
+    sessionwiki::index::reject_memory_proposal(&conn, &rejected).unwrap();
+    assert!(
+        sessionwiki::index::approve_memory_proposal(&conn, &rejected).is_err(),
+        "a rejected note never becomes a snippet"
+    );
+
+    let approved = propose("approved", None);
+    sessionwiki::index::approve_memory_proposal(&conn, &approved).unwrap();
+    assert!(
+        sessionwiki::index::reject_memory_proposal(&conn, &approved).is_err(),
+        "a saved note cannot be reported as rejected"
+    );
+}

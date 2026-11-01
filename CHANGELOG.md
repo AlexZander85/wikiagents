@@ -2,10 +2,13 @@
 
 ## [1.3.0] - 2026-11-01 (WikiAgents)
 
-Review fixes for 1.0→1.2.1 plus the features that followed from them. Work in
-progress on the `fix/review-1.3` branch; this section grows as each phase lands.
+Review fixes for 1.0→1.2.1 plus the features that followed from them.
 
 ### Security
+- **A secret in a memory's title or tags is removed too**: `propose_memory` redacted
+  only the body, so a token in the title reached the queue, the tool's reply and the
+  backups. Redaction now also runs before the length cap, which could cut a secret
+  out of its own pattern. `remember` goes through the same check.
 - **Web API now proves the caller is our own UI**: every `/api/*` request must carry
   the `X-WikiAgents: 1` header. A cross-site page cannot set it — `<img src>`, a form
   post and top-level navigation send no custom headers, and a cross-origin `fetch`
@@ -17,6 +20,21 @@ progress on the `fix/review-1.3` branch; this section grows as each phase lands.
   `/api/snippet/save|delete|rename` answer 405 to any other method.
 
 ### Fixed
+- **A rejected memory stays rejected**: `memory approve` used to save it anyway, and
+  `memory reject` reported success on one already saved. Both now answer with an error.
+- **`hook install-git` works from a linked worktree and with `core.hooksPath`**: it
+  wrote the hook where git never looks and reported success.
+- **`backup --status` reports a failed run**: it kept saying `ok` from the last good one.
+- **A backup with nothing new adds no commit**: the date in `manifest.json` and the
+  README alone made every run a commit. A run that finds nothing new still pushes,
+  and reports it if that fails, so a commit left behind by a failed push gets out.
+- **ChatGPT exports in `web_session/gpt/` reach the backup's raw copy**: only the top
+  level of `web_session` was read. Below it only files an adapter reads are copied,
+  so `user.json` and the like stay on the machine. `recombine` follows subfolders.
+- **A project's folder view is not cut short**: the 500-row limit applied to the whole
+  repository before the UI narrowed it to the folder, so a busy repository could show
+  a subfolder as nearly empty. `/api/sessions` takes `folder=`; its rows and
+  `/api/projects` give `project_key` as stored, the repository root.
 - **The desktop window opens without the two-second wait**: the app probed its port
   with a connect, and Windows retries a refused loopback connection for about 2 s.
   It now binds the port first and opens the index behind it, so the window no longer

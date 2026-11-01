@@ -58,6 +58,7 @@ fn listed(conn: &Connection, project: &str) -> Vec<String> {
             since: None,
             until: None,
             include_subagents: false,
+            folders: None,
         },
         index::SessionSort::Created,
     )
@@ -131,4 +132,53 @@ fn every_spelling_of_a_project_gets_one_key_and_one_filter() {
         0,
         "a path that merely shares a prefix is another project"
     );
+}
+
+/// A repository and its subfolders are one project to `project`, so the row limit
+/// of a listing is spent across all of them. A view of one folder asks for that
+/// folder and gets it, in whichever spelling it was stored.
+#[test]
+fn a_folder_listing_spends_its_limit_on_that_folder() {
+    let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let dir = std::env::temp_dir().join("sessionwiki-test-project-folder");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::env::set_var("SESSIONWIKI_DATA", &dir);
+
+    let conn = index::open().unwrap();
+    for i in 0..5 {
+        insert(&conn, &format!("/s/root{i}.jsonl"), "/repo/x");
+    }
+    insert(&conn, "/s/sub.jsonl", "/repo/x/sub");
+    insert(&conn, "/s/deep.jsonl", "/repo/x/sub/deep/");
+    insert(&conn, "/s/sibling.jsonl", "/repo/x/sub-other");
+
+    let folders = index::project_folders(&conn, "/repo/x/sub/").unwrap();
+    assert_eq!(folders.len(), 2, "{folders:?}");
+    let rows = index::recent_range(
+        &conn,
+        2,
+        &index::ListQuery {
+            folders: Some(&folders),
+            ..Default::default()
+        },
+        index::SessionSort::Created,
+    )
+    .unwrap();
+    assert_eq!(rows.len(), 2, "the limit is not used up by the repository");
+    assert!(rows.iter().all(
+        |r| r.project.starts_with("/repo/x/sub") && !r.project.starts_with("/repo/x/sub-other")
+    ));
+
+    let none = index::recent_range(
+        &conn,
+        10,
+        &index::ListQuery {
+            folders: Some(&[]),
+            ..Default::default()
+        },
+        index::SessionSort::Created,
+    )
+    .unwrap();
+    assert!(none.is_empty(), "a folder nothing lives in lists nothing");
 }

@@ -73,7 +73,7 @@ impl Fixture {
         // Only index::open reads this process-global variable. Restore it
         // before the lock is released; subprocesses receive their own value.
         let mut conn = {
-            let _guard = INDEX_ENV.lock().unwrap();
+            let _guard = INDEX_ENV.lock().unwrap_or_else(|e| e.into_inner());
             let previous = std::env::var_os("SESSIONWIKI_DATA");
             std::env::set_var("SESSIONWIKI_DATA", &data);
             let result = index::open();
@@ -205,7 +205,7 @@ fn archived_tool_output_is_available_to_show_full_and_brief_tools() {
     fs::write(&source, "fixture").unwrap();
 
     let mut conn = {
-        let _guard = INDEX_ENV.lock().unwrap();
+        let _guard = INDEX_ENV.lock().unwrap_or_else(|e| e.into_inner());
         let previous = std::env::var_os("SESSIONWIKI_DATA");
         std::env::set_var("SESSIONWIKI_DATA", &data);
         let result = index::open();

@@ -2675,6 +2675,11 @@ pub struct ListQuery<'a> {
     pub until: Option<&'a str>,
     /// Keep subagent sessions; listings hide them by default.
     pub include_subagents: bool,
+    /// Only these `files.project` values (see [`project_folders`]). `project`
+    /// treats a repository and its subfolders as one project; this is for a view
+    /// of one folder, which must not lose rows to a limit applied to the whole
+    /// repository first.
+    pub folders: Option<&'a [String]>,
 }
 
 pub fn recent(
@@ -2840,6 +2845,7 @@ pub fn recent_range(
         since,
         until,
         include_subagents,
+        folders,
     } = *query;
     let mut sql = format!(
         "SELECT session_id, tool, path, project, title, started, msg_count, kind, {PREVIEW_SQL}, {SUMMARY_SQL}, {TAGS_SQL}, (archived_at IS NOT NULL), COALESCE(ended, started), parent_id
@@ -2864,6 +2870,17 @@ pub fn recent_range(
             until,
         },
     );
+    if let Some(folders) = folders {
+        if folders.is_empty() {
+            sql.push_str(" AND 0");
+        } else {
+            let marks = vec!["?"; folders.len()].join(",");
+            sql.push_str(&format!(" AND f.project IN ({marks})"));
+            for folder in folders {
+                args.push(Box::new(folder.clone()));
+            }
+        }
+    }
     // Recent means recently ACTIVE by default: a session resumed for weeks
     // began long ago, and ordering by its start buried it below everything
     // begun since. Sorting here rather than in the caller makes the "created"
@@ -4142,8 +4159,10 @@ pub fn propose_memory(
     if content.is_empty() {
         anyhow::bail!("content is required");
     }
-    let title = crate::util::truncate(title, PROPOSAL_TITLE_MAX);
-    let content = cap_chars(content, PROPOSAL_CONTENT_MAX);
+    // Redact before capping: a cut through a secret would no longer match its
+    // pattern, and the rest of it would be stored.
+    let title = crate::util::truncate(&crate::redact::redact(title), PROPOSAL_TITLE_MAX);
+    let content = cap_chars(&crate::redact::redact(content), PROPOSAL_CONTENT_MAX);
     let now = chrono::Utc::now().to_rfc3339();
     let id = crate::util::short_id(&format!("{title}\u{1}{content}\u{1}{now}"));
     conn.execute(
@@ -4152,8 +4171,8 @@ pub fn propose_memory(
         params![
             id,
             title,
-            crate::redact::redact(&content),
-            tags.unwrap_or("").trim(),
+            content,
+            crate::redact::redact(tags.unwrap_or("").trim()).as_ref(),
             session_id.filter(|s| !s.trim().is_empty()).map(str::trim),
             tool.filter(|t| !t.trim().is_empty()).map(str::trim),
             now,
@@ -4206,15 +4225,19 @@ pub fn save_memory_snippet(
     tags: Option<&str>,
     session_id: &str,
 ) -> Result<i64> {
+    // What an agent asks to remember is untrusted text, in every field of it.
+    let title = crate::redact::redact(title);
+    let content = crate::redact::redact(content);
+    let tags = tags.map(crate::redact::redact);
     save_snippet(
         conn,
         &NewSnippet {
             session_id,
             message_idx: 0,
-            title,
+            title: &title,
             lang: Some("markdown"),
-            content,
-            tags,
+            content: &content,
+            tags: tags.as_deref(),
             tool: Some("assistant"),
             role: Some("assistant_memory"),
             message_ts: None,
@@ -4224,10 +4247,11 @@ pub fn save_memory_snippet(
 
 /// Write an approved proposal to the knowledge base. Idempotent: a proposal that
 /// already carries a snippet answers with that id instead of saving a second one.
+/// A rejected one stays rejected: that decision is the record the queue keeps.
 pub fn approve_memory_proposal(conn: &Connection, id: &str) -> Result<i64> {
     ensure_memory_proposals_table(conn)?;
     let row = conn.query_row(
-        "SELECT title, content, tags, session_id, snippet_id
+        "SELECT title, content, tags, session_id, snippet_id, status
          FROM memory_proposals WHERE id = ?1",
         params![id],
         |r| {
@@ -4237,14 +4261,18 @@ pub fn approve_memory_proposal(conn: &Connection, id: &str) -> Result<i64> {
                 r.get::<_, String>(2)?,
                 r.get::<_, Option<String>>(3)?,
                 r.get::<_, Option<i64>>(4)?,
+                r.get::<_, String>(5)?,
             ))
         },
     );
-    let Ok((title, content, tags, session_id, existing)) = row else {
+    let Ok((title, content, tags, session_id, existing, status)) = row else {
         anyhow::bail!("no proposal {id}");
     };
     if let Some(snippet_id) = existing {
         return Ok(snippet_id);
+    }
+    if status == "rejected" {
+        anyhow::bail!("proposal {id} was rejected");
     }
     let snippet_id = save_memory_snippet(
         conn,
@@ -4265,6 +4293,17 @@ pub fn approve_memory_proposal(conn: &Connection, id: &str) -> Result<i64> {
 /// deleting it would lose the only trace that the agent offered it.
 pub fn reject_memory_proposal(conn: &Connection, id: &str) -> Result<bool> {
     ensure_memory_proposals_table(conn)?;
+    let status: Option<String> = conn
+        .query_row(
+            "SELECT status FROM memory_proposals WHERE id = ?1",
+            params![id],
+            |r| r.get(0),
+        )
+        .optional()?;
+    if status.as_deref() == Some("approved") {
+        // It is already in the knowledge base; saying "rejected" would be false.
+        anyhow::bail!("proposal {id} was already approved");
+    }
     let changed = conn.execute(
         "UPDATE memory_proposals SET status = 'rejected', decided_at = ?2
          WHERE id = ?1 AND status != 'approved'",
@@ -5023,6 +5062,25 @@ pub struct ProjectRow {
 /// One row per project (a wiki "category" page), busiest first. `newest` is
 /// the last activity, on the session list's clock: a long session begun months
 /// ago but worked in yesterday makes its project recent.
+/// Every spelling of `folder` stored in `files.project`, and of the folders below
+/// it. The stored key is the repository root, so it cannot tell a subfolder from
+/// its repository; the comparison has to happen on the folder itself.
+pub fn project_folders(conn: &Connection, folder: &str) -> Result<Vec<String>> {
+    let key = crate::util::project_key(folder);
+    let below = format!("{key}/");
+    let mut stmt = conn.prepare("SELECT DISTINCT project FROM files WHERE project != ''")?;
+    let projects = stmt.query_map([], |r| r.get::<_, String>(0))?;
+    let mut out = Vec::new();
+    for project in projects {
+        let project = project?;
+        let candidate = crate::util::project_key(&project);
+        if candidate == key || candidate.starts_with(&below) {
+            out.push(project);
+        }
+    }
+    Ok(out)
+}
+
 pub fn projects(conn: &Connection) -> Result<Vec<ProjectRow>> {
     let mut stmt = conn.prepare(
         "SELECT project, count(*), coalesce(sum(msg_count), 0), min(started),
@@ -5033,7 +5091,7 @@ pub fn projects(conn: &Connection) -> Result<Vec<ProjectRow>> {
     let rows = stmt.query_map([], |r| {
         let project: String = r.get(0)?;
         Ok(ProjectRow {
-            project_key: crate::util::project_key(&project),
+            project_key: crate::util::project_root_key(&project),
             project,
             sessions: r.get(1)?,
             messages: r.get(2)?,

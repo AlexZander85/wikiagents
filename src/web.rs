@@ -408,6 +408,9 @@ fn api_sessions(conn: &Connection, query: &str) -> Result<Boxed> {
         .unwrap_or(500);
     let include_subagents = param(query, "subagents").is_some_and(|v| v == "1" || v == "true")
         || param(query, "all").is_some_and(|v| v == "1" || v == "true");
+    let folders = param(query, "folder")
+        .map(|folder| index::project_folders(conn, &folder))
+        .transpose()?;
     let rows = index::recent_range(
         conn,
         limit,
@@ -418,6 +421,7 @@ fn api_sessions(conn: &Connection, query: &str) -> Result<Boxed> {
             since: since.as_deref(),
             until: until.as_deref(),
             include_subagents,
+            folders: folders.as_deref(),
         },
         index::SessionSort::parse(param(query, "sort").as_deref().unwrap_or("")),
     )?;
@@ -1320,11 +1324,15 @@ fn api_snippet_save(conn: &Connection, req: &mut tiny_http::Request, query: &str
 /// and can never drift apart.
 fn row_json(r: &index::SessionRow) -> serde_json::Value {
     let mut val = serde_json::to_value(r).unwrap_or_else(|_| json!({}));
-    // The key the list filters match on, so a click on a project name filters
-    // by folder rather than by one tool's spelling of it.
+    // `project_key` is the repository, as `files.project_key` stores it;
+    // `folder_key` is the folder itself, each in one spelling for every tool.
     if let Some(object) = val.as_object_mut() {
         object.insert(
             "project_key".to_string(),
+            json!(crate::util::project_root_key(&r.project)),
+        );
+        object.insert(
+            "folder_key".to_string(),
             json!(crate::util::project_key(&r.project)),
         );
     }

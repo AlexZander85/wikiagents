@@ -175,8 +175,14 @@ const MARKER_MAX_AGE_SECS: i64 = 12 * 3600;
 /// The `.git` directory of the repository containing `cwd`, as `git` itself
 /// reports it (absolute, or relative to `cwd`). None outside a repository.
 fn git_dir(cwd: &str) -> Option<PathBuf> {
+    git_path(cwd, &["rev-parse", "--git-dir"])
+}
+
+/// A path git reports for `cwd`, which it may give relative to it.
+fn git_path(cwd: &str, args: &[&str]) -> Option<PathBuf> {
     let out = crate::backup::new_git_cmd()
-        .args(["-C", cwd, "rev-parse", "--git-dir"])
+        .args(["-C", cwd])
+        .args(args)
         .output()
         .ok()?;
     if !out.status.success() {
@@ -300,10 +306,16 @@ pub fn install_git_hook(repo: Option<&str>) -> anyhow::Result<HookInstall> {
         Some(r) => std::path::PathBuf::from(r),
         None => std::env::current_dir()?,
     };
-    let Some(git_dir) = git_dir(&cwd.to_string_lossy()) else {
+    // Ask git rather than join `<git-dir>/hooks`: a linked worktree has a git-dir
+    // of its own that git never looks for hooks in, and `core.hooksPath` can move
+    // them anywhere.
+    let Some(hooks) = git_path(
+        &cwd.to_string_lossy(),
+        &["rev-parse", "--git-path", "hooks"],
+    ) else {
         anyhow::bail!("{} is not a git repository", cwd.display());
     };
-    let path = git_dir.join("hooks").join("prepare-commit-msg");
+    let path = hooks.join("prepare-commit-msg");
     if let Ok(existing) = std::fs::read_to_string(&path) {
         if existing.contains("hook prepare-commit-msg") {
             return Ok(HookInstall::Already(path));

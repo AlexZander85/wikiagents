@@ -6397,11 +6397,13 @@ async function refresh() {
   const subParam = $("show-subagents-cb") && $("show-subagents-cb").checked ? "&subagents=1" : "";
   const tagParam = currentTag ? `&tag=${encodeURIComponent(currentTag)}` : "";
   let projParam = "";
+  let folderParam = "";
   if (currentProject) {
-    // The server matches a project by its normalized key and folds in sessions
-    // filed under a subfolder, so it gets the path - not one folder name, which
-    // was all a substring match could use safely.
-    projParam = `&project=${encodeURIComponent(normProjectPath(currentProject))}`;
+    // The server normalizes both. A search takes the whole project; the listing
+    // takes the folder that was clicked, so its limit applies to that folder and
+    // not to a repository whose other folders would use it up.
+    projParam = `&project=${encodeURIComponent(currentProject)}`;
+    folderParam = `&folder=${encodeURIComponent(currentProject)}`;
   }
   // The listing is sorted by the server so "created" and "message count"
   // cover every session, not just the 500 most recently active.
@@ -6456,9 +6458,9 @@ async function refresh() {
       items = await jget(`/api/search?q=${encodeURIComponent(inputVal)}${t}${r}${tagParam}${projParam}${sParam}${uParam}`);
     }
   } else if (currentTag) {
-    items = await jget(`/api/sessions?limit=500${t}${tagParam}${projParam}${sParam}${uParam}${subParam}${sortParam}`);
+    items = await jget(`/api/sessions?limit=500${t}${tagParam}${folderParam}${sParam}${uParam}${subParam}${sortParam}`);
   } else {
-    items = await jget(`/api/sessions?limit=500${t}${projParam}${sParam}${uParam}${subParam}${sortParam}`);
+    items = await jget(`/api/sessions?limit=500${t}${folderParam}${sParam}${uParam}${subParam}${sortParam}`);
   }
   if (seq !== refreshSeq) return;
 
@@ -6470,7 +6472,7 @@ async function refresh() {
   if (currentProject !== null) {
     const targetNorm = normProjectPath(currentProject);
     items = items.filter((row) => {
-      const n = normProjectPath(row.project);
+      const n = (row.folder_key ?? normProjectPath(row.project)).toLowerCase();
       return n === targetNorm || n.startsWith(targetNorm + "/");
     });
   }

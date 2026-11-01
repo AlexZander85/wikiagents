@@ -1294,16 +1294,20 @@ fn tool_propose_memory(_conn: &mut Option<Connection>, args: &Value) -> Value {
         args.get("session_id").and_then(Value::as_str),
         args.get("tool").and_then(Value::as_str),
     ) {
-        Ok(id) => json_result(vec![json!({
-            "ok": true,
-            "id": id,
-            "status": "pending",
-            "title": title,
-            "message": format!(
-                "Proposed memory {id} [{title}]. It is not saved yet: a person approves or \
-                 rejects it in WikiAgents (Snippets tab, or `wikiagents memory approve {id}`)."
-            )
-        })]),
+        Ok(id) => {
+            // Echoed back into the agent's transcript, which is indexed too.
+            let title = crate::redact::redact(title);
+            json_result(vec![json!({
+                "ok": true,
+                "id": id,
+                "status": "pending",
+                "title": title,
+                "message": format!(
+                    "Proposed memory {id} [{title}]. It is not saved yet: a person approves or \
+                     rejects it in WikiAgents (Snippets tab, or `wikiagents memory approve {id}`)."
+                )
+            })])
+        }
         Err(e) => text_result(
             format!("propose memory failed: {}", safe_text(&e.to_string())),
             true,

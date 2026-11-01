@@ -419,3 +419,86 @@ fn the_size_thresholds_are_the_github_limit() {
         "GitHub's recommended 1 GB"
     );
 }
+
+#[test]
+fn a_backup_with_nothing_new_adds_no_commit_but_still_pushes() {
+    let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    if !git_available() {
+        eprintln!("skipping: git is not available on this machine");
+        return;
+    }
+    let machine = Machine::new();
+    let conn = machine.seed();
+    let url = machine.remote_url();
+
+    backup::run_backup(&conn, &url).unwrap();
+    backup::run_backup(&conn, &url).unwrap();
+    let stage = machine.stage();
+    assert_eq!(git(stage, &["rev-list", "--count", "HEAD"]), "1");
+
+    // A commit a failed push left behind goes out with the next run, even one
+    // that has nothing of its own to add.
+    machine.set_note(&conn, "revision 1");
+    let gone = machine.remote.with_extension("gone");
+    std::fs::rename(&machine.remote, &gone).unwrap();
+    assert!(backup::run_backup(&conn, &url).is_err());
+    std::fs::rename(&gone, &machine.remote).unwrap();
+    backup::run_backup(&conn, &url).unwrap();
+    assert_eq!(
+        git(stage, &["rev-parse", "HEAD"]),
+        git(&machine.remote, &["rev-parse", "main"]),
+        "the remote caught up"
+    );
+}
+
+#[test]
+fn a_failed_backup_is_what_the_status_says() {
+    let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    if !git_available() {
+        eprintln!("skipping: git is not available on this machine");
+        return;
+    }
+    let machine = Machine::new();
+    let conn = machine.seed();
+    let url = machine.remote_url();
+    backup::run_backup(&conn, &url).unwrap();
+    let status = || backup::get_backup_config(&conn).unwrap().last_status;
+    assert_eq!(status().as_deref(), Some("ok"));
+
+    machine.set_note(&conn, "revision 1");
+    let gone = machine.remote.with_extension("gone");
+    std::fs::rename(&machine.remote, &gone).unwrap();
+    assert!(backup::run_backup(&conn, &url).is_err());
+    std::fs::rename(&gone, &machine.remote).unwrap();
+    let after = status().unwrap_or_default();
+    assert!(after.starts_with("error:"), "{after}");
+}
+
+#[test]
+fn nested_chat_exports_are_copied_and_the_rest_of_their_folder_is_not() {
+    let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    if !git_available() {
+        eprintln!("skipping: git is not available on this machine");
+        return;
+    }
+    let machine = Machine::new();
+    let chats = machine.root.path().join("chats");
+    std::fs::create_dir_all(chats.join("gpt")).unwrap();
+    std::fs::write(chats.join("gpt/conversations-000.json"), "[]").unwrap();
+    std::fs::write(
+        chats.join("gpt/user.json"),
+        r#"{"email":"me@example.invalid"}"#,
+    )
+    .unwrap();
+    std::fs::write(chats.join("gemini_all.json"), "[]").unwrap();
+    std::env::set_var("WIKIAGENTS_WEB_SESSION_DIR", &chats);
+
+    let conn = machine.seed();
+    backup::run_backup(&conn, &machine.remote_url()).unwrap();
+    let files = tracked_files(machine.stage());
+    assert!(files
+        .iter()
+        .any(|f| f == "web_session/gpt/conversations-000.json"));
+    assert!(files.iter().any(|f| f == "web_session/gemini_all.json"));
+    assert!(!files.iter().any(|f| f.ends_with("user.json")), "{files:?}");
+}
