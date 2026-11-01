@@ -7099,10 +7099,18 @@ function renderTagBar() {
   }
 }
 
+// One rule for every number the page shows: the list, the header and the
+// Activity dashboard all answer for the filters that are on - a dashboard left
+// open while a filter flips has to follow it.
+function onScopeFilterChange() {
+  refresh();
+  loadStats();
+  if (currentSidebarMode === "activity") loadActivityAnalytics();
+}
+
 if ($("show-subagents-cb")) {
   $("show-subagents-cb").addEventListener("change", () => {
-    refresh();
-    loadStats();
+    onScopeFilterChange();
   });
 }
 
@@ -7114,8 +7122,7 @@ if ($("show-webchats-cb")) {
   $("show-webchats-cb").addEventListener("change", () => {
     localStorage.setItem("wikiagents-show-webchat", $("show-webchats-cb").checked ? "1" : "0");
     updateToolSelectOptions();
-    refresh();
-    loadStats();
+    onScopeFilterChange();
   });
 }
 
@@ -7128,8 +7135,7 @@ if ($("show-short-cb")) {
   }
   $("show-short-cb").addEventListener("change", () => {
     localStorage.setItem("wikiagents-show-short", $("show-short-cb").checked ? "1" : "0");
-    refresh();
-    loadStats();
+    onScopeFilterChange();
   });
 }
 
