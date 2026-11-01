@@ -1,5 +1,16 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+- **Antigravity transcripts prefer `transcript_full.jsonl`**: previously preferred compact `transcript.jsonl`, which truncates long assistant replies, tables, and Mermaid diagrams with `<truncated N bytes>` placeholders. Now imports the complete, untruncated transcript without loss.
+
+### Changed
+- **Short sessions filter keeps the last day**: a session from the last 24 hours stays in the feed however few messages it has, so one that just started no longer goes missing.
+
+### Added
+- **Hidden short matches in search**: an empty search says how many short sessions match and shows them on click.
+
 ## [1.4.1] - 2026-11-01 (WikiAgents)
 
 Git commit inspector dialog, collapsible commits in session headers, and sidebar filters for web chats and short/stub sessions.

@@ -245,9 +245,9 @@ pub fn tool_names() -> Vec<&'static str> {
 /// Add a line here to re-parse ONE tool after a parser fix; everything not
 /// listed sits at the current version.
 const READER_OVERRIDES: &[(&str, i64)] = &[
-    // 1.3 also un-escapes the double-escaped `D:\\proj` paths this tool writes,
-    // which only a re-parse can fix.
-    ("antigravity", 3),
+    // 4: prefer `transcript_full.jsonl` over `transcript.jsonl` so untruncated
+    // text, complete tables, and diagrams are preserved.
+    ("antigravity", 4),
     // 4: the web adapters now take a chat's id from the chat itself instead of
     // from the export file, and keep the model's thinking blocks. Only these
     // tools need their sessions read again.

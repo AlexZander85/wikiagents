@@ -3466,7 +3466,7 @@
           <input type="checkbox" id="show-webchats-cb" checked style="margin: 0; cursor: pointer;">
           <span id="show-webchats-label">🌐 Web Chats</span>
         </label>
-        <label class="short-label" style="display: inline-flex; align-items: center; gap: 4px; font-size: 11px; color: var(--ink-2); cursor: pointer; user-select: none;" title="Показывать короткие сессии (1-2 сообщения или без ответа модели). По умолчанию скрыты для чистоты выдачи.">
+        <label class="short-label" style="display: inline-flex; align-items: center; gap: 4px; font-size: 11px; color: var(--ink-2); cursor: pointer; user-select: none;" title="Показывать короткие сессии (1-2 сообщения или без ответа модели). По умолчанию скрыты для чистоты выдачи, кроме сессий за последние сутки.">
           <input type="checkbox" id="show-short-cb" style="margin: 0; cursor: pointer;">
           <span id="show-short-label">💬 Short</span>
         </label>
@@ -3681,6 +3681,7 @@ const I18N = {
     showSubagents: "🤖 Подагенты",
     showWebChats: "🌐 Веб-чаты",
     showShort: "💬 Короткие",
+    shortHiddenMatches: (n) => `Скрыто коротких сессий с этим запросом: ${n}. Показать`,
     subagentsLabel: "Подагенты",
     parent: "Родитель",
     parentSession: "Родительская сессия",
@@ -3798,6 +3799,7 @@ const I18N = {
     showSubagents: "🤖 Subagents",
     showWebChats: "🌐 Web Chats",
     showShort: "💬 Short",
+    shortHiddenMatches: (n) => `${n} short sessions match and are hidden. Show them`,
     subagentsLabel: "Subagents",
     parent: "Parent",
     parentSession: "Parent session",
@@ -3918,6 +3920,7 @@ const I18N = {
     showSubagents: "🤖 서브에이전트",
     showWebChats: "🌐 웹 채팅",
     showShort: "💬 짧은 세션",
+    shortHiddenMatches: (n) => `숨겨진 짧은 세션 ${n}개가 일치합니다. 표시`,
     subagentsLabel: "서브에이전트",
     parent: "상위",
     parentSession: "상위 세션",
@@ -4018,6 +4021,7 @@ const I18N = {
     showSubagents: "🤖 サブエージェント",
     showWebChats: "🌐 ウェブチャット",
     showShort: "💬 短いセッション",
+    shortHiddenMatches: (n) => `非表示の短いセッション ${n}件が一致します。表示`,
     subagentsLabel: "サブエージェント",
     parent: "親",
     parentSession: "親セッション",
@@ -4118,6 +4122,7 @@ const I18N = {
     showSubagents: "🤖 子代理",
     showWebChats: "🌐 网页聊天",
     showShort: "💬 短会话",
+    shortHiddenMatches: (n) => `${n} 个已隐藏的短会话匹配。显示`,
     subagentsLabel: "子代理",
     parent: "父会话",
     parentSession: "父会话",
@@ -6758,6 +6763,7 @@ async function refresh() {
   let items = [];
   const isSearchActive = searchKeywords.length > 0 || inputVal.length >= 2 || !!currentFileTrace;
 
+  let searchUrl = null;
   if (currentFileTrace) {
     items = await jget(`/api/trace?path=${encodeURIComponent(currentFileTrace)}&limit=500${t}${folderParam}${sParam}${uParam}${webParam}${shortParam}`);
     if (tool) {
@@ -6767,7 +6773,8 @@ async function refresh() {
     // Mode 3: Keyword filter chips via '+' -> cross-message session intersection!
     const sessionTermsParam = `&session_terms=${encodeURIComponent(searchKeywords.join(","))}`;
     const qParam = inputVal ? `&q=${encodeURIComponent(inputVal)}` : "";
-    items = await jget(`/api/search?limit=500${sessionTermsParam}${qParam}${t}${r}${tagParam}${projParam}${folderParam}${sParam}${uParam}${webParam}${shortParam}`);
+    searchUrl = `/api/search?limit=500${sessionTermsParam}${qParam}${t}${r}${tagParam}${projParam}${folderParam}${sParam}${uParam}${webParam}`;
+    items = await jget(`${searchUrl}${shortParam}`);
   } else if (inputVal.length >= 2) {
     const commitPrefixMatch = inputVal.match(/^(?:commit|sha):([0-9a-f]{7,40})$/i);
     const isDirectCommitSha = /^[0-9a-f]{7,40}$/i.test(inputVal) && /[a-f]/i.test(inputVal);
@@ -6784,7 +6791,8 @@ async function refresh() {
     }
     if (items.length === 0) {
       // Mode 1 & 2: Search bar input -> strictly within one message!
-      items = await jget(`/api/search?q=${encodeURIComponent(inputVal)}${t}${r}${tagParam}${projParam}${folderParam}${sParam}${uParam}${webParam}${shortParam}`);
+      searchUrl = `/api/search?limit=500&q=${encodeURIComponent(inputVal)}${t}${r}${tagParam}${projParam}${folderParam}${sParam}${uParam}${webParam}`;
+      items = await jget(`${searchUrl}${shortParam}`);
     }
   } else if (currentTag) {
     items = await jget(`/api/sessions?limit=500${t}${tagParam}${folderParam}${sParam}${uParam}${subParam}${sortParam}${webParam}${shortParam}`);
@@ -6822,6 +6830,23 @@ async function refresh() {
   }
 
   renderItems(items, isSearchActive);
+
+  // An empty search should not read as "no such session" while the filter hides some.
+  if (searchUrl && shortParam && !items.length && !currentOnlyFavorites) {
+    const hidden = await jget(searchUrl);
+    if (seq !== refreshSeq || !hidden || !hidden.length) return;
+    const empty = $("list").querySelector(".empty");
+    if (!empty) return;
+    const show = el("a", "", L.shortHiddenMatches(hidden.length));
+    show.href = "#";
+    show.style.cssText = "display:block;margin-top:8px;color:var(--accent);";
+    show.onclick = (e) => {
+      e.preventDefault();
+      $("show-short-cb").checked = true;
+      $("show-short-cb").dispatchEvent(new Event("change"));
+    };
+    empty.appendChild(show);
+  }
 }
 
 // A removable chip above the list when a tag filter is active.
@@ -9624,169 +9649,202 @@ function closeCommitModal() {
 
 function copyCommitText(text, label) {
   if (navigator.clipboard) {
-    navigator.clipboard.writeText(text);
+    navigator.clipboard.writeText(String(text));
   }
-  showToast("✓ " + (label || "Скопировано"));
+  showToast("✓ " + (label || (L.copied || "Скопировано")));
 }
 
-function confirmCommitOpen(e) {
-  if (!confirm("Внимание: этот коммит ещё не отправлен на GitHub (git push origin не выполнялся), поэтому сервер GitHub вернёт ошибку 404.\n\nВсё равно открыть ссылку?")) {
-    if (e) e.preventDefault();
-    return false;
-  }
-  return true;
+/* A branch name, a remote URL and a commit message are whatever the author of a
+   cloned repository wrote into it. They reach the DOM only as text nodes or as
+   element properties, never inside markup or an inline event handler: escaping
+   for an `onclick="..."` attribute is not enough, the browser decodes the
+   entity before the handler body is parsed as JavaScript. */
+function commitHttpsUrl(url) {
+  if (typeof url !== "string") return null;
+  const trimmed = url.trim();
+  return /^https:\/\//i.test(trimmed) ? trimmed : null;
 }
 
-async function openCommitModal(sha, project, gitRemote, message, branch) {
+function commitHostOf(url) {
+  try {
+    return new URL(url).hostname.replace(/^www\./i, "");
+  } catch (e) {
+    return "";
+  }
+}
+
+function commitOpenLabel(url) {
+  const host = url ? commitHostOf(url) : "";
+  return host ? L.commitOpenHost(host) : L.commitOpenRemote;
+}
+
+function commitCopyBtn(text, copiedLabel) {
+  const btn = el("button", "btn-copy-small", `📋 ${L.commitCopy}`);
+  btn.type = "button";
+  btn.addEventListener("click", () => copyCommitText(text, copiedLabel));
+  return btn;
+}
+
+function commitShaRow(sha) {
+  const row = el("div", "commit-modal-sha-row");
+  row.appendChild(el("span", "commit-modal-sha-label", "SHA:"));
+  row.appendChild(el("code", "commit-modal-sha-code", sha));
+  row.appendChild(commitCopyBtn(sha, L.commitShaCopied));
+  return row;
+}
+
+function commitRemoteLink(commitUrl, isPushed) {
+  const link = el("a", isPushed ? "btn-commit-action btn-gh" : "btn-commit-action btn-gh-warn");
+  link.href = commitUrl;
+  link.target = "_blank";
+  link.rel = "noopener noreferrer";
+  link.appendChild(document.createTextNode(`↗ ${commitOpenLabel(commitUrl)}`));
+  if (!isPushed) {
+    link.appendChild(el("span", "unpushed-tag", L.commitMaybe404));
+    link.addEventListener("click", (e) => {
+      if (!confirm(L.commitConfirmUnpushed)) e.preventDefault();
+    });
+  }
+  return link;
+}
+
+function commitStatusCard(data) {
+  if (!data.found_in_git) {
+    const card = el("div", "commit-status-card status-neutral");
+    const top = el("div", "status-card-top");
+    top.appendChild(el("span", "status-badge-icon", "ℹ️"));
+    top.appendChild(el("span", "status-title", L.commitLocalTitle));
+    card.append(top, el("div", "status-desc", L.commitLocalDesc));
+    return card;
+  }
+
+  if (data.pushed !== true) {
+    const card = el("div", "commit-status-card status-unpushed");
+    const top = el("div", "status-card-top");
+    top.appendChild(el("span", "status-badge-icon", "⚠️"));
+    top.appendChild(el("span", "status-title", L.commitUnpushedTitle));
+    const desc = el("div", "status-desc", L.commitUnpushedDesc);
+    card.append(top, desc);
+
+    const box = el("div", "status-action-box");
+    box.appendChild(el("div", "action-box-title", L.commitPushHint));
+    const cmd = el("div", "cmd-box");
+    if (data.push_branch) {
+      const line = `git push origin ${data.push_branch}`;
+      cmd.appendChild(el("code", null, line));
+      cmd.appendChild(commitCopyBtn(line, L.commitCmdCopied));
+    } else {
+      // Guessing a branch would push the wrong one; say which ones hold it.
+      const branches = (data.local_branches || []).slice(0, 8).join(", ");
+      cmd.appendChild(el("code", null, branches || "git push origin <branch>"));
+      box.appendChild(cmd);
+      card.appendChild(box);
+      card.appendChild(el("div", "status-desc", branches ? L.commitPushManyBranches : L.commitPushNoBranch));
+      return card;
+    }
+    box.appendChild(cmd);
+    card.appendChild(box);
+    return card;
+  }
+
+  const card = el("div", "commit-status-card status-pushed");
+  const top = el("div", "status-card-top");
+  top.appendChild(el("span", "status-badge-icon", "🟢"));
+  const onOrigin = (data.remote_branches || []).join(", ") || "origin";
+  top.appendChild(el("span", "status-title", L.commitPushedTitle(onOrigin)));
+  card.append(top, el("div", "status-desc", L.commitPushedDesc));
+  const others = (data.other_remote_branches || []).slice(0, 8).join(", ");
+  if (others) card.appendChild(el("div", "status-desc", L.commitOtherRemotes(others)));
+  return card;
+}
+
+function openCommitModal(sha, project, gitRemote, message, branch) {
   const overlay = document.getElementById("commit-modal-overlay");
   if (!overlay) return;
   overlay.style.display = "flex";
 
   const shortSha = sha ? sha.slice(0, 7) : "";
-  document.getElementById("commit-modal-sha-title").textContent = `Коммит ${shortSha}`;
+  const title = document.getElementById("commit-modal-sha-title");
+  title.textContent = L.commitModalTitle(shortSha);
+  const closeBtn = document.querySelector("#commit-modal-overlay .commit-close-btn");
+  if (closeBtn) closeBtn.title = L.commitClose;
+
   const body = document.getElementById("commit-modal-body");
-
-  body.innerHTML = `
-    <div class="commit-modal-sha-row">
-      <span class="commit-modal-sha-label">SHA:</span>
-      <code class="commit-modal-sha-code">${escapeHtml(sha)}</code>
-      <button class="btn-copy-small" onclick="copyCommitText('${escapeHtml(sha)}', 'SHA скопирован')">📋 Скопировать</button>
-    </div>
-    ${message ? `<div class="commit-msg-box"><div class="commit-subject">${escapeHtml(message)}</div></div>` : ''}
-    <div style="display:flex;align-items:center;gap:8px;padding:12px 4px;color:var(--ink-2);font-size:12px;">
-      <span>⏳</span> Проверка состояния в Git...
-    </div>
-  `;
-
-  try {
-    const params = new URLSearchParams({ sha: sha });
-    if (project) params.append("project", project);
-    const res = await fetch(`/api/git/commit?${params.toString()}`, { headers: API_HEADERS });
-    if (!res.ok) throw new Error("HTTP " + res.status);
-    const data = await res.json();
-    renderCommitModalContent(data, sha, project, gitRemote, message, branch);
-  } catch (err) {
-    renderCommitModalContent({
-      ok: true,
-      found_in_git: false,
-      sha: sha,
-      short_sha: shortSha,
-      message: message,
-      remote_url: gitRemote,
-      branch: branch
-    }, sha, project, gitRemote, message, branch);
+  body.replaceChildren();
+  body.appendChild(commitShaRow(sha));
+  if (message) {
+    const msgBox = el("div", "commit-msg-box");
+    msgBox.appendChild(el("div", "commit-subject", message));
+    body.appendChild(msgBox);
   }
+  body.appendChild(el("div", "commit-checking", `⏳ ${L.commitChecking}`));
+
+  const params = new URLSearchParams({ sha: sha });
+  if (project) params.append("project", project);
+  jget(`/api/git/commit?${params.toString()}`, 15000)
+    .then((data) => renderCommitModalContent(data, sha, gitRemote, message, branch))
+    .catch(() => renderCommitModalContent(
+      { ok: true, found_in_git: false, sha: sha, message: message },
+      sha,
+      gitRemote,
+      message,
+      branch
+    ));
 }
 
-function renderCommitModalContent(data, origSha, project, gitRemote, origMessage, origBranch) {
+function renderCommitModalContent(data, origSha, gitRemote, origMessage, origBranch) {
   const body = document.getElementById("commit-modal-body");
   if (!body) return;
 
-  const fullSha = data.sha || origSha;
-  const shortSha = data.short_sha || fullSha.slice(0, 7);
+  const fullSha = String(data.sha || origSha || "");
   const remoteUrl = data.remote_url || gitRemote;
-  const curBranch = data.branch || origBranch || 'main';
   const isPushed = data.pushed === true;
-  const commitUrl = data.commit_url || (remoteUrl ? `${remoteUrl}/commit/${fullSha}` : null);
+  const commitUrl = commitHttpsUrl(
+    data.commit_url || (remoteUrl ? `${remoteUrl}/commit/${fullSha}` : null)
+  );
   const subject = data.subject || data.message || origMessage || '';
   const commitBody = data.body || '';
 
-  let statusHtml = '';
-  if (data.found_in_git) {
-    if (!isPushed) {
-      statusHtml = `
-        <div class="commit-status-card status-unpushed">
-          <div class="status-card-top">
-            <span class="status-badge-icon">⚠️</span>
-            <span class="status-title">Локальный коммит (не отправлен на GitHub)</span>
-          </div>
-          <div class="status-desc">
-            Этот коммит существует только в локальном Git-репозитории на вашем компьютере.<br>
-            На GitHub его ещё нет, поэтому ссылка <code>/commit/${shortSha}</code> выдаёт ошибку <strong>404 Not Found</strong>.
-          </div>
-          <div class="status-action-box">
-            <div class="action-box-title">Чтобы отправить коммит на GitHub, выполните:</div>
-            <div class="cmd-box">
-              <code>git push origin ${escapeHtml(curBranch)}</code>
-              <button class="btn-copy-small" onclick="copyCommitText('git push origin ${escapeHtml(curBranch)}', 'Команда скопирована')">📋 Скопировать</button>
-            </div>
-          </div>
-        </div>
-      `;
-    } else {
-      const branchesStr = (data.remote_branches || []).join(', ') || 'origin';
-      statusHtml = `
-        <div class="commit-status-card status-pushed">
-          <div class="status-card-top">
-            <span class="status-badge-icon">🟢</span>
-            <span class="status-title">Отправлен в удалённый репозиторий (${escapeHtml(branchesStr)})</span>
-          </div>
-          <div class="status-desc">Коммит синхронизирован с сервером GitHub. Ссылка активна.</div>
-        </div>
-      `;
-    }
-  } else {
-    statusHtml = `
-      <div class="commit-status-card status-neutral">
-        <div class="status-card-top">
-          <span class="status-badge-icon">ℹ️</span>
-          <span class="status-title">Информация из журнала сессии</span>
-        </div>
-        <div class="status-desc">Локальный Git-репозиторий проекта недоступен по указанному пути или коммит был перезаписан.</div>
-      </div>
-    `;
-  }
+  body.replaceChildren();
+  body.appendChild(commitShaRow(fullSha));
+  body.appendChild(commitStatusCard(data));
 
-  let metaHtml = '';
   if (data.found_in_git && (data.author || data.date)) {
-    metaHtml = `
-      <div class="commit-meta-grid">
-        ${data.author ? `<span class="meta-label">Автор:</span><span class="meta-val">${escapeHtml(data.author)} ${data.email ? '&lt;' + escapeHtml(data.email) + '&gt;' : ''}</span>` : ''}
-        ${data.date ? `<span class="meta-label">Дата:</span><span class="meta-val">${escapeHtml(new Date(data.date).toLocaleString())}</span>` : ''}
-      </div>
-    `;
+    const grid = el("div", "commit-meta-grid");
+    if (data.author) {
+      grid.appendChild(el("span", "meta-label", L.commitAuthor));
+      const val = el("span", "meta-val", data.author);
+      if (data.email) val.appendChild(document.createTextNode(` <${data.email}>`));
+      grid.appendChild(val);
+    }
+    if (data.date) {
+      grid.appendChild(el("span", "meta-label", L.commitDate));
+      grid.appendChild(el("span", "meta-val", new Date(data.date).toLocaleString()));
+    }
+    body.appendChild(grid);
   }
 
-  let statHtml = '';
+  if (subject) {
+    const msgBox = el("div", "commit-msg-box");
+    msgBox.appendChild(el("div", "commit-subject", subject));
+    if (commitBody) msgBox.appendChild(el("div", "commit-body-text", commitBody));
+    body.appendChild(msgBox);
+  }
+
   if (data.stat) {
-    statHtml = `
-      <div class="commit-stat-section">
-        <div class="stat-header">Изменённые файлы:</div>
-        <pre class="commit-stat-box">${escapeHtml(data.stat)}</pre>
-      </div>
-    `;
+    const section = el("div", "commit-stat-section");
+    section.appendChild(el("div", "stat-header", L.commitFilesChanged));
+    section.appendChild(el("pre", "commit-stat-box", data.stat));
+    body.appendChild(section);
   }
 
-  let actionsHtml = `
-    <div class="commit-actions-bar">
-      <button type="button" class="btn-commit-action btn-commit-primary" onclick="copyCommitText('${escapeHtml(fullSha)}', 'SHA скопирован')">📋 Скопировать SHA</button>
-      ${commitUrl ? (isPushed ? `
-        <a class="btn-commit-action btn-gh" href="${commitUrl}" target="_blank" rel="noopener noreferrer">↗ Открыть на GitHub</a>
-      ` : `
-        <a class="btn-commit-action btn-gh-warn" href="${commitUrl}" target="_blank" rel="noopener noreferrer" onclick="return confirmCommitOpen(event)">
-          ↗ Открыть на GitHub <span class="unpushed-tag">может быть 404</span>
-        </a>
-      `) : ''}
-    </div>
-  `;
-
-  body.innerHTML = `
-    <div class="commit-modal-sha-row">
-      <span class="commit-modal-sha-label">SHA:</span>
-      <code class="commit-modal-sha-code">${escapeHtml(fullSha)}</code>
-      <button class="btn-copy-small" onclick="copyCommitText('${escapeHtml(fullSha)}', 'SHA скопирован')">📋 Скопировать</button>
-    </div>
-    ${statusHtml}
-    ${metaHtml}
-    ${subject ? `
-      <div class="commit-msg-box">
-        <div class="commit-subject">${escapeHtml(subject)}</div>
-        ${commitBody ? `<div class="commit-body-text">${escapeHtml(commitBody)}</div>` : ''}
-      </div>
-    ` : ''}
-    ${statHtml}
-    ${actionsHtml}
-  `;
+  const actions = el("div", "commit-actions-bar");
+  const copyShaBtn = el("button", "btn-commit-action btn-commit-primary", `📋 ${L.commitCopySha}`);
+  copyShaBtn.type = "button";
+  copyShaBtn.addEventListener("click", () => copyCommitText(fullSha, L.commitShaCopied));
+  actions.appendChild(copyShaBtn);
+  if (commitUrl) actions.appendChild(commitRemoteLink(commitUrl, isPushed));
+  body.appendChild(actions);
 }
 async function openBackupModal() {
   const overlay = document.getElementById("backup-modal-overlay");

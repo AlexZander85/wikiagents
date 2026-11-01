@@ -784,3 +784,32 @@ fn exclude_short_filter_rules_and_exceptions() {
     assert!(remaining_ids.contains(&"s6_fav".to_string()));
     assert!(remaining_ids.contains(&"s7_note".to_string()));
 }
+
+#[test]
+fn exclude_short_keeps_a_session_from_the_last_day() {
+    let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let (conn, _dir) = fresh_index();
+    let ago = |hours| (chrono::Utc::now() - chrono::Duration::hours(hours)).to_rfc3339();
+    for (id, when) in [("fresh", ago(1)), ("stale", ago(25))] {
+        conn.execute(
+            "INSERT OR REPLACE INTO files
+             (path, mtime, size, session_id, tool, project, title, started, ended, msg_count, kind)
+             VALUES (?1, 0, 0, ?2, 'test-tool', 'proj', ?2, ?3, ?3, 1, 'main')",
+            params![format!("/fake/{id}.json"), id, when],
+        )
+        .unwrap();
+    }
+
+    let rows = index::recent_range(
+        &conn,
+        10,
+        &index::ListQuery {
+            exclude_short: true,
+            ..Default::default()
+        },
+        index::SessionSort::LastActive,
+    )
+    .unwrap();
+    let ids: Vec<&str> = rows.iter().map(|r| r.session_id.as_str()).collect();
+    assert_eq!(ids, ["fresh"]);
+}

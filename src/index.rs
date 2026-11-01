@@ -2678,7 +2678,7 @@ pub struct ListQuery<'a> {
     pub include_subagents: bool,
     /// Exclude web chats (e.g. tools ending in -web)
     pub exclude_web: bool,
-    /// Exclude short/stub sessions (0-1 msgs, or 2 msgs with <250 char response)
+    /// Exclude short/stub sessions (0-1 msgs, or 2 msgs with <250 char response), older than a day
     pub exclude_short: bool,
     /// Only these `files.project` values (see [`project_folders`]). `project`
     /// treats a repository and its subfolders as one project; this is for a view
@@ -2802,8 +2802,12 @@ fn push_session_scope(
                          AND (m.role = 'tool' OR (m.role = 'assistant' AND length(m.text) >= 250))\
                    )) \
                    OR EXISTS(SELECT 1 FROM favorites fav WHERE fav.session_id = f.session_id) \
-                   OR EXISTS(SELECT 1 FROM notes n WHERE n.session_id = f.session_id))",
+                   OR EXISTS(SELECT 1 FROM notes n WHERE n.session_id = f.session_id)                    OR COALESCE(f.ended, f.started) >= ?)",
         );
+        // A session that just started has few messages because it just started.
+        args.push(Box::new(
+            (chrono::Utc::now() - chrono::Duration::hours(24)).to_rfc3339(),
+        ));
     }
     if let Some(p) = filters.project {
         push_project_scope(sql, args, p);
@@ -3182,7 +3186,7 @@ pub struct SearchScope<'a> {
     pub until: Option<&'a str>,
     /// Exclude web chats (e.g. tools ending in -web)
     pub exclude_web: bool,
-    /// Exclude short/stub sessions (0-1 msgs, or 2 msgs with <250 char response)
+    /// Exclude short/stub sessions (0-1 msgs, or 2 msgs with <250 char response), older than a day
     pub exclude_short: bool,
 }
 

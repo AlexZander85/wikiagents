@@ -138,7 +138,8 @@ fn extract_user_request(text: &str) -> String {
 
 /// The transcript of one conversation folder: the first directory (in
 /// `conversation_id`'s nesting order) that holds one, preferring
-/// `transcript.jsonl` over `transcript_full.jsonl` beside it.
+/// `transcript_full.jsonl` over `transcript.jsonl` beside it so full,
+/// untruncated model responses and tables are preserved.
 fn conversation_transcript(conv: &Path) -> Option<PathBuf> {
     let logs = conv.join(".system_generated").join("logs");
     let dirs = [
@@ -148,7 +149,7 @@ fn conversation_transcript(conv: &Path) -> Option<PathBuf> {
         conv.to_path_buf(),
     ];
     dirs.iter().find_map(|dir| {
-        ["transcript.jsonl", "transcript_full.jsonl"]
+        ["transcript_full.jsonl", "transcript.jsonl"]
             .iter()
             .map(|name| dir.join(name))
             .find(|p| p.is_file())
@@ -486,5 +487,23 @@ mod tests {
             .expect("parse should succeed");
         assert_eq!(session.project, r"D:\crypto\src");
         assert_eq!(crate::util::project_key(&session.project), "d:/crypto/src");
+    }
+
+    #[test]
+    fn test_prefers_transcript_full_over_transcript() {
+        let temp = tempfile::tempdir().unwrap();
+        let logs_dir = temp
+            .path()
+            .join(".system_generated")
+            .join("logs");
+        std::fs::create_dir_all(&logs_dir).unwrap();
+        let compact_path = logs_dir.join("transcript.jsonl");
+        let full_path = logs_dir.join("transcript_full.jsonl");
+
+        std::fs::write(&compact_path, "compact").unwrap();
+        std::fs::write(&full_path, "full").unwrap();
+
+        let chosen = conversation_transcript(temp.path()).expect("found transcript");
+        assert_eq!(chosen, full_path, "transcript_full.jsonl must be chosen over transcript.jsonl");
     }
 }
