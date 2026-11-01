@@ -1,0 +1,41 @@
+[
+  {
+    "id": "gemini-chat-0001",
+    "title": "Summarise this changelog",
+    "exported_at": "2026-05-01T10:00:00.000Z",
+    "complete": true,
+    "message_count": 2,
+    "messages": [
+      {
+        "role": "user",
+        "text": "Give me three bullet points for the 1.3 changelog.",
+        "order": 1
+      },
+      {
+        "role": "model",
+        "thinking": "The user wants a short list, so I keep one line per theme and drop the file names.",
+        "markdown": "- Normalised project keys\n- Exact commit attribution\n- An approval queue for agent memories",
+        "order": 2
+      }
+    ]
+  },
+  {
+    "id": "gemini-chat-0002",
+    "title": "",
+    "exported_at": "2026-05-03T14:30:00.000Z",
+    "complete": false,
+    "message_count": 2,
+    "messages": [
+      {
+        "role": "model",
+        "markdown": "I can help with that - what is the file?",
+        "order": 2
+      },
+      {
+        "role": "user",
+        "text": "It is src/web.rs, the request router.",
+        "order": 1
+      }
+    ]
+  }
+]

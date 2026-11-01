@@ -204,6 +204,32 @@ pub fn store_checks() -> Vec<Check> {
     checks
 }
 
+/// A portable install (`<exe_dir>/data/index.db`) and an installed one
+/// (`<data_dir>/sessionwiki/index.db`) are both found. The binary picks one and
+/// the GUI can pick the other, so the same history looks like it has lost
+/// sessions depending on where you look. Surfaced, not resolved: the selection
+/// order is what the user set up.
+///
+/// `None` when at most one of the two exists.
+pub fn duplicate_index_check(
+    used: Option<&std::path::Path>,
+    portable: &std::path::Path,
+    installed: &std::path::Path,
+) -> Option<Check> {
+    if !(portable.is_file() && installed.is_file()) {
+        return None;
+    }
+    let mut detail = format!(
+        "found two indexes; the CLI and the GUI may use different databases: {} and {}",
+        portable.display(),
+        installed.display()
+    );
+    if let Some(u) = used {
+        detail.push_str(&format!(" (this process uses {})", u.display()));
+    }
+    Some(Check::warn("index files", detail))
+}
+
 /// Run every check and print the report (`--json` for scripts). Opens the index
 /// read-only so `doctor` never mutates it.
 pub fn run(json: bool) -> anyhow::Result<()> {
@@ -212,18 +238,31 @@ pub fn run(json: bool) -> anyhow::Result<()> {
     // existing_db_path() has NO side effects (unlike open()/open_readonly, which
     // create the data dir and can rename legacy dirs) - so `doctor` stays truly
     // read-only. Absent index vs an index that won't open are DIFFERENT problems.
-    match crate::index::existing_db_path() {
+    let used = crate::index::existing_db_path();
+    match &used {
         None => checks.push(Check::warn(
             "index",
             "not built yet - run `sessionwiki search` to build it".into(),
         )),
-        Some(path) => match Connection::open_with_flags(&path, OpenFlags::SQLITE_OPEN_READ_ONLY) {
-            Ok(conn) => checks.extend(index_checks(&conn, crate::index::SCHEMA_VERSION)),
-            Err(e) => checks.push(Check::fail(
-                "index",
-                format!("present but cannot open ({}): {e}", path.display()),
-            )),
-        },
+        Some(path) => {
+            checks.push(Check::ok("index path", path.display().to_string()));
+            match Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY) {
+                Ok(conn) => checks.extend(index_checks(&conn, crate::index::SCHEMA_VERSION)),
+                Err(e) => checks.push(Check::fail(
+                    "index",
+                    format!("present but cannot open ({}): {e}", path.display()),
+                )),
+            }
+        }
+    }
+    let portable = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|d| d.join("data").join("index.db")));
+    let installed = dirs::data_dir().map(|d| d.join("sessionwiki").join("index.db"));
+    if let (Some(portable), Some(installed)) = (portable.as_deref(), installed.as_deref()) {
+        if let Some(c) = duplicate_index_check(used.as_deref(), portable, installed) {
+            checks.push(c);
+        }
     }
     checks.push(Check::ok("version", env!("CARGO_PKG_VERSION").into()));
 
@@ -346,6 +385,45 @@ mod tests {
             .find(|c| c.name == "index schema")
             .unwrap();
         assert_eq!(schema.status, Status::Ok);
+    }
+
+    /// A portable `data/index.db` next to the exe wins over the installed
+    /// `%APPDATA%\sessionwiki\index.db`, so a GUI that resolves the directory the
+    /// other way reads a different history - which looks like sessions vanishing.
+    /// Two indexes on one machine is worth saying; one is normal.
+    #[test]
+    fn two_indexes_are_named_but_one_is_silent() {
+        let dir = tempfile::tempdir().unwrap();
+        let portable = dir.path().join("data").join("index.db");
+        let installed = dir.path().join("sessionwiki").join("index.db");
+        std::fs::create_dir_all(portable.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(installed.parent().unwrap()).unwrap();
+
+        std::fs::write(&portable, b"").unwrap();
+        assert!(
+            duplicate_index_check(Some(&portable), &portable, &installed).is_none(),
+            "one index is the expected setup"
+        );
+
+        std::fs::write(&installed, b"").unwrap();
+        let c = duplicate_index_check(Some(&portable), &portable, &installed).expect("both there");
+        assert_eq!(c.status, Status::Warn);
+        assert!(
+            c.detail.contains(&portable.display().to_string())
+                && c.detail.contains(&installed.display().to_string()),
+            "names both paths: {}",
+            c.detail
+        );
+        assert!(
+            c.detail.contains(&format!("uses {})", portable.display())),
+            "says which one this process uses: {}",
+            c.detail
+        );
+
+        // An index directory that exists without a database in it is not a second
+        // index - nothing to conflict with.
+        std::fs::remove_file(&installed).unwrap();
+        assert!(duplicate_index_check(None, &portable, &installed).is_none());
     }
 }
 

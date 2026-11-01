@@ -1,0 +1,82 @@
+[
+  {
+    "id": "2222222222222222222222222222aaaa",
+    "title": "Rotate the deploy keys",
+    "created_at": 1740000000,
+    "inserted_at": "2025-02-19T08:00:00.000Z",
+    "updated_at": "2025-02-19T08:20:00.000Z",
+    "mapping": {
+      "root": {
+        "id": "root",
+        "parent": null,
+        "children": ["d1"]
+      },
+      "d1": {
+        "id": "d1",
+        "parent": "root",
+        "children": ["d2"],
+        "message": {
+          "author": "user",
+          "inserted_at": "2025-02-19T08:00:00.000Z",
+          "fragments": [
+            {
+              "type": "REQUEST",
+              "content": "We need to rotate our deploy keys without downtime. Steps?"
+            }
+          ]
+        }
+      },
+      "d2": {
+        "id": "d2",
+        "parent": "d1",
+        "children": [],
+        "message": {
+          "author": "assistant",
+          "model": "deepseek-chat",
+          "inserted_at": "2025-02-19T08:20:00.000Z",
+          "reasoning_content": "Two keys must be live at once, so the order is: add the new key, then retire the old one.",
+          "fragments": [
+            {
+              "type": "RESPONSE",
+              "content": "Add the new key to every host first, verify ssh -i works, only then drop the old authorized_keys entry."
+            }
+          ]
+        }
+      }
+    }
+  },
+  {
+    "id": "2222222222222222222222222222bbbb",
+    "title": "",
+    "created_at": 1740086400,
+    "inserted_at": "2025-02-20T08:00:00.000Z",
+    "updated_at": "2025-02-20T08:05:00.000Z",
+    "mapping": {
+      "root": {
+        "id": "root",
+        "parent": null,
+        "children": ["e1"]
+      },
+      "e1": {
+        "id": "e1",
+        "parent": "root",
+        "children": [],
+        "message": {
+          "author": "user",
+          "inserted_at": "2025-02-20T08:00:00.000Z",
+          "fragments": [
+            {
+              "type": "REQUEST",
+              "content": "Which command shows the size of my Docker images?"
+            },
+            {
+              "type": "FILE",
+              "content": "",
+              "files": [{ "file_name": "images.txt", "file_id": "f1" }]
+            }
+          ]
+        }
+      }
+    }
+  }
+]

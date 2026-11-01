@@ -4,7 +4,7 @@ use crate::util::short_id;
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use serde_json::Value;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use walkdir::WalkDir;
@@ -17,6 +17,143 @@ fn make_key(path: &Path, id: &str) -> String {
 
 fn display_path(key: &str) -> String {
     key.replace(KEY_SEP, "#")
+}
+
+/// A web chat's own id, not the file it happens to be exported into: re-export
+/// the same chats next month and they are still the same session.
+fn web_session_id(tool: &str, native: &str) -> String {
+    short_id(&format!("{tool}:{native}"))
+}
+
+/// The native id half of a store key (`path<SEP>native`), if this key is one.
+pub(crate) fn native_part_of_key(key: &str) -> Option<&str> {
+    key.split_once(KEY_SEP).map(|(_, native)| native)
+}
+
+/// The export-file half of a store key, if this key is one.
+pub(crate) fn file_part_of_key(key: &str) -> Option<&str> {
+    key.split_once(KEY_SEP).map(|(file, _)| file)
+}
+
+/// The reasoning a model showed for one turn. The exporters disagree about
+/// where it lives: Claude web puts `thinking` blocks in the content array,
+/// Qwen-style exporters use a `reasoning_content` field, and the v4 Gemini
+/// exporter writes a plain `thinking` string on the message.
+fn reasoning_of(msg: &Value) -> Option<String> {
+    const REASON_FIELDS: [&str; 4] = [
+        "thinking",
+        "reasoning_content",
+        "thinking_content",
+        "reasoning",
+    ];
+    const BLOCK_ARRAYS: [&str; 3] = ["content", "content_list", "fragments"];
+    const BLOCK_FIELDS: [&str; 4] = ["thinking", "reasoning_content", "text", "content"];
+
+    let mut parts: Vec<&str> = Vec::new();
+    for field in REASON_FIELDS {
+        if let Some(s) = msg.get(field).and_then(Value::as_str) {
+            let trimmed = s.trim();
+            if !trimmed.is_empty() {
+                parts.push(trimmed);
+            }
+        }
+    }
+    for array_field in BLOCK_ARRAYS {
+        let Some(blocks) = msg.get(array_field).and_then(Value::as_array) else {
+            continue;
+        };
+        for block in blocks {
+            let kind = block
+                .get("type")
+                .or_else(|| block.get("phase"))
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_ascii_lowercase();
+            if kind != "thinking" && kind != "reasoning" {
+                continue;
+            }
+            for field in BLOCK_FIELDS {
+                if let Some(s) = block.get(field).and_then(Value::as_str) {
+                    let trimmed = s.trim();
+                    if !trimmed.is_empty() {
+                        parts.push(trimmed);
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    if parts.is_empty() {
+        return None;
+    }
+    Some(parts.join("\n\n"))
+}
+
+/// How many turns an export item holds, from whichever container the vendor
+/// uses. Only used to break a tie between two exports of one chat, so an
+/// approximate count is enough.
+fn message_count_of(item: &Value) -> usize {
+    ["chat_messages", "messages", "history", "content_list"]
+        .iter()
+        .filter_map(|field| item.get(*field).and_then(Value::as_array))
+        .map(Vec::len)
+        .max()
+        .or_else(|| {
+            item.get("mapping")
+                .and_then(Value::as_object)
+                .map(|m| m.len())
+        })
+        .unwrap_or(0)
+        // The v4 Gemini exporter marks a chat it read whole, so a complete
+        // export beats a truncated one when both carry the same timestamp.
+        + usize::from(item.get("complete").and_then(Value::as_bool) == Some(true))
+}
+
+/// One store key per chat id: the newest export wins, and a tie goes to the
+/// export that holds more of the conversation.
+#[derive(Default)]
+struct StoreKeys {
+    ordered: Vec<Entry>,
+    best: HashMap<String, usize>,
+}
+
+struct Entry {
+    key: String,
+    token: i64,
+    message_count: usize,
+}
+
+impl StoreKeys {
+    fn add(&mut self, native: &str, file: &Path, token: i64, message_count: usize) {
+        match self.best.get(native) {
+            None => {
+                self.best.insert(native.to_string(), self.ordered.len());
+                self.ordered.push(Entry {
+                    key: make_key(file, native),
+                    token,
+                    message_count,
+                });
+            }
+            Some(at) => {
+                let at = *at;
+                let entry = &mut self.ordered[at];
+                if token > entry.token
+                    || (token == entry.token && message_count > entry.message_count)
+                {
+                    entry.key = make_key(file, native);
+                    entry.token = token;
+                    entry.message_count = message_count;
+                }
+            }
+        }
+    }
+
+    fn finish(self) -> Vec<(String, i64)> {
+        self.ordered
+            .into_iter()
+            .map(|entry| (entry.key, entry.token))
+            .collect()
+    }
 }
 
 fn file_mtime_ms(path: &Path) -> i64 {
@@ -62,17 +199,14 @@ pub fn web_session_roots() -> Vec<PathBuf> {
             roots.push(p);
         }
     }
-    if let Ok(cwd) = std::env::current_dir() {
-        let p = cwd.join("web_session");
-        if p.is_dir() && !roots.contains(&p) {
-            roots.push(p);
-        }
-    }
-    #[cfg(windows)]
-    {
-        let p = PathBuf::from(r"D:\wikiagents\web_session");
-        if p.is_dir() && !roots.contains(&p) {
-            roots.push(p);
+    // Next to the executable rather than to a machine-specific checkout: an
+    // installed binary carries its own exports, wherever it is launched from.
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            let p = dir.join("web_session");
+            if p.is_dir() && !roots.contains(&p) {
+                roots.push(p);
+            }
         }
     }
     if let Some(home) = crate::util::home_dir() {
@@ -85,6 +219,14 @@ pub fn web_session_roots() -> Vec<PathBuf> {
             roots.push(p2);
         }
     }
+    // Last, so an explicit root always wins: a checkout that keeps its exports
+    // beside it is still found when the tool is run from inside that checkout.
+    if let Ok(cwd) = std::env::current_dir() {
+        let p = cwd.join("web_session");
+        if p.is_dir() && !roots.contains(&p) {
+            roots.push(p);
+        }
+    }
     roots
 }
 
@@ -93,6 +235,11 @@ struct CachedFile {
     path: PathBuf,
     mtime_ms: i64,
     json: Arc<Value>,
+    /// Native id -> position in the top-level array, built the first time a
+    /// session is looked up by id. Every adapter used to `find` its way through
+    /// the array per session, which made re-indexing one big export quadratic -
+    /// the Claude export alone holds thousands of chats.
+    by_id: Option<Arc<HashMap<String, usize>>>,
 }
 
 #[derive(Default)]
@@ -100,13 +247,88 @@ pub struct JsonCache {
     inner: Mutex<Option<CachedFile>>,
 }
 
+/// The id field a top-level export item is keyed by. Claude web exports name it
+/// `uuid`, the others `id`.
+fn native_id_of_item(item: &Value) -> Option<&str> {
+    item.get("uuid")
+        .and_then(Value::as_str)
+        .or_else(|| item.get("id").and_then(Value::as_str))
+}
+
+/// The array of chats a vendor puts at the top of the file.
+fn top_level_items(json: &Value) -> Option<&Vec<Value>> {
+    json.as_array()
+}
+
+/// Qwen wraps its chats in a `data` object; older exports are a bare array.
+fn data_or_top_items(json: &Value) -> Option<&Vec<Value>> {
+    json.get("data")
+        .and_then(Value::as_array)
+        .or_else(|| json.as_array())
+}
+
 impl JsonCache {
     fn get_or_load(&self, path: &Path) -> Result<Arc<Value>> {
+        Ok(self.cached(path)?.json)
+    }
+
+    /// The document together with the position of `wanted` inside the array
+    /// `items` selects. The id index is built once per file and kept with it, so
+    /// listing a store and then re-parsing each of its sessions stays linear -
+    /// the per-session `find` made re-indexing one big export quadratic, and the
+    /// Claude export holds thousands of chats.
+    fn locate(
+        &self,
+        path: &Path,
+        wanted: &str,
+        items: fn(&Value) -> Option<&Vec<Value>>,
+    ) -> Result<(Arc<Value>, usize)> {
+        let cached = self.cached(path)?;
+        let index = match cached.by_id {
+            Some(index) => index,
+            None => {
+                let mut map = HashMap::new();
+                if let Some(arr) = items(&cached.json) {
+                    for (i, item) in arr.iter().enumerate() {
+                        if let Some(id) = native_id_of_item(item) {
+                            // Two items with one id in a single file is a broken
+                            // export; the first spelling is the one we index.
+                            map.entry(id.to_string()).or_insert(i);
+                        }
+                    }
+                }
+                let index = Arc::new(map);
+                if let Ok(mut guard) = self.inner.lock() {
+                    if let Some(inner) = guard.as_mut() {
+                        inner.by_id = Some(Arc::clone(&index));
+                    }
+                }
+                index
+            }
+        };
+        let at = index
+            .get(wanted)
+            .copied()
+            .with_context(|| format!("session {wanted} not found in {}", path.display()))?;
+        Ok((cached.json, at))
+    }
+
+    fn cached(&self, path: &Path) -> Result<CachedFile> {
         let mtime_ms = file_mtime_ms(path);
-        let mut guard = self.inner.lock().unwrap();
+        // A poisoned lock still guards a usable cache; failing the whole lookup
+        // over another thread's panic would be worse than reusing its entry.
+        let mut guard = self
+            .inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         if let Some(cached) = guard.as_ref() {
             if cached.path == path && cached.mtime_ms == mtime_ms {
-                return Ok(Arc::clone(&cached.json));
+                return Ok(CachedFile {
+                    path: cached.path.clone(),
+                    mtime_ms: cached.mtime_ms,
+                    json: Arc::clone(&cached.json),
+                    by_id: cached.by_id.clone(),
+                });
             }
         }
 
@@ -115,13 +337,19 @@ impl JsonCache {
         let reader = std::io::BufReader::new(file);
         let parsed: Value = serde_json::from_reader(reader)
             .with_context(|| format!("parse JSON from {}", path.display()))?;
-        let arc = Arc::new(parsed);
-        *guard = Some(CachedFile {
+        let cached = CachedFile {
             path: path.to_path_buf(),
             mtime_ms,
-            json: Arc::clone(&arc),
+            json: Arc::new(parsed),
+            by_id: None,
+        };
+        *guard = Some(CachedFile {
+            path: cached.path.clone(),
+            mtime_ms: cached.mtime_ms,
+            json: Arc::clone(&cached.json),
+            by_id: None,
         });
-        Ok(arc)
+        Ok(cached)
     }
 }
 
@@ -173,6 +401,46 @@ fn extract_code_block_paths(text: &str, touched: &mut Vec<String>) {
     }
 }
 
+/// The chat `JsonCache::locate` pointed at, read back through the same picker:
+/// an index is only meaningful inside the array it was built from, and Qwen's
+/// chats sit under `data` rather than at the top of the file.
+fn item_at(json: &Value, at: usize, items: fn(&Value) -> Option<&Vec<Value>>) -> Option<&Value> {
+    items(json).and_then(|arr| arr.get(at))
+}
+
+/// List every chat in these export files, one store key per conversation:
+/// `pick` says where the chats sit in a file and `token_of` when a chat last
+/// changed, which is what decides between two exports of one conversation.
+fn scan_store(
+    cache: &JsonCache,
+    files: &[PathBuf],
+    pick: fn(&Value) -> Option<&Vec<Value>>,
+    token_of: fn(&Value, i64) -> i64,
+) -> (StoreKeys, bool) {
+    let mut keys = StoreKeys::default();
+    let mut had_error = false;
+    for file in files {
+        let json = match cache.get_or_load(file) {
+            Ok(json) => json,
+            Err(_) => {
+                had_error = true;
+                continue;
+            }
+        };
+        let Some(arr) = pick(&json) else {
+            continue;
+        };
+        let mtime = file_mtime_ms(file);
+        for item in arr {
+            let Some(id) = native_id_of_item(item) else {
+                continue;
+            };
+            keys.add(id, file, token_of(item, mtime), message_count_of(item));
+        }
+    }
+    (keys, had_error)
+}
+
 // =============================================================================
 // 1. Claude Web Adapter
 // =============================================================================
@@ -181,6 +449,15 @@ pub struct ClaudeWeb {
     cache: JsonCache,
 }
 
+impl ClaudeWeb {
+    fn token(item: &Value, mtime: i64) -> i64 {
+        item.get("updated_at")
+            .and_then(Value::as_str)
+            .and_then(parse_rfc3339_utc)
+            .map(|dt| dt.timestamp_millis())
+            .unwrap_or(mtime)
+    }
+}
 impl Adapter for ClaudeWeb {
     fn name(&self) -> &'static str {
         "claude-web"
@@ -206,39 +483,12 @@ impl Adapter for ClaudeWeb {
     }
 
     fn store(&self) -> Option<Store> {
-        let (files, mut had_error) = discover_vendor_files("claude");
-        let mut keys: Vec<(String, i64)> = Vec::new();
-
-        for file in &files {
-            let json = match self.cache.get_or_load(file) {
-                Ok(j) => j,
-                Err(_) => {
-                    had_error = true;
-                    continue;
-                }
-            };
-            let Some(arr) = json.as_array() else {
-                continue;
-            };
-            let mtime = file_mtime_ms(file);
-            for item in arr {
-                let Some(uuid) = item.get("uuid").and_then(Value::as_str) else {
-                    continue;
-                };
-                let token = item
-                    .get("updated_at")
-                    .and_then(Value::as_str)
-                    .and_then(parse_rfc3339_utc)
-                    .map(|dt| dt.timestamp_millis())
-                    .unwrap_or(mtime);
-                keys.push((make_key(file, uuid), token));
-            }
-        }
-
+        let (files, fs_error) = discover_vendor_files("claude");
+        let (keys, read_error) = scan_store(&self.cache, &files, top_level_items, Self::token);
         Some(Store {
-            keys,
+            keys: keys.finish(),
             files,
-            had_error,
+            had_error: fs_error || read_error,
         })
     }
 
@@ -247,14 +497,9 @@ impl Adapter for ClaudeWeb {
             .split_once(KEY_SEP)
             .context("malformed claude-web key")?;
         let path = Path::new(file_str);
-        let json = self.cache.get_or_load(path)?;
-        let arr = json
-            .as_array()
-            .context("claude web export is not an array")?;
-        let item = arr
-            .iter()
-            .find(|item| item.get("uuid").and_then(Value::as_str) == Some(uuid))
-            .with_context(|| format!("session {uuid} not found in {}", path.display()))?;
+        let (json, at) = self.cache.locate(path, uuid, top_level_items)?;
+        let item = item_at(&json, at, top_level_items)
+            .context("claude web export changed while it was read")?;
         parse_claude_item(path, uuid, item)
     }
 }
@@ -317,6 +562,12 @@ fn parse_claude_item(path: &Path, uuid: &str, item: &Value) -> Result<Session> {
                 }
             }
 
+            // The reasoning blocks come before the answer they produced, the way
+            // they read in the chat.
+            if let Some(reasoning) = reasoning_of(msg) {
+                messages.push(Message::plain(Role::Assistant, reasoning, ts));
+            }
+
             if !text.is_empty() {
                 extract_code_block_paths(&text, &mut touched);
                 messages.push(Message::plain(role, text, ts));
@@ -328,7 +579,7 @@ fn parse_claude_item(path: &Path, uuid: &str, item: &Value) -> Result<Session> {
     let final_title = title.unwrap_or_else(|| title_from_messages(&messages));
 
     Ok(Session {
-        id: short_id(&key),
+        id: web_session_id("claude-web", uuid),
         tool: "claude-web",
         path: PathBuf::from(display_path(&key)),
         project: "web".to_string(),
@@ -349,6 +600,17 @@ fn parse_claude_item(path: &Path, uuid: &str, item: &Value) -> Result<Session> {
 #[derive(Default)]
 pub struct DeepSeekWeb {
     cache: JsonCache,
+}
+
+impl DeepSeekWeb {
+    fn token(item: &Value, mtime: i64) -> i64 {
+        item.get("updated_at")
+            .or_else(|| item.get("inserted_at"))
+            .and_then(Value::as_str)
+            .and_then(parse_rfc3339_utc)
+            .map(|dt| dt.timestamp_millis())
+            .unwrap_or(mtime)
+    }
 }
 
 impl Adapter for DeepSeekWeb {
@@ -376,40 +638,12 @@ impl Adapter for DeepSeekWeb {
     }
 
     fn store(&self) -> Option<Store> {
-        let (files, mut had_error) = discover_vendor_files("deepseek");
-        let mut keys: Vec<(String, i64)> = Vec::new();
-
-        for file in &files {
-            let json = match self.cache.get_or_load(file) {
-                Ok(j) => j,
-                Err(_) => {
-                    had_error = true;
-                    continue;
-                }
-            };
-            let Some(arr) = json.as_array() else {
-                continue;
-            };
-            let mtime = file_mtime_ms(file);
-            for item in arr {
-                let Some(id) = item.get("id").and_then(Value::as_str) else {
-                    continue;
-                };
-                let token = item
-                    .get("updated_at")
-                    .or_else(|| item.get("inserted_at"))
-                    .and_then(Value::as_str)
-                    .and_then(parse_rfc3339_utc)
-                    .map(|dt| dt.timestamp_millis())
-                    .unwrap_or(mtime);
-                keys.push((make_key(file, id), token));
-            }
-        }
-
+        let (files, fs_error) = discover_vendor_files("deepseek");
+        let (keys, read_error) = scan_store(&self.cache, &files, top_level_items, Self::token);
         Some(Store {
-            keys,
+            keys: keys.finish(),
             files,
-            had_error,
+            had_error: fs_error || read_error,
         })
     }
 
@@ -418,14 +652,9 @@ impl Adapter for DeepSeekWeb {
             .split_once(KEY_SEP)
             .context("malformed deepseek-web key")?;
         let path = Path::new(file_str);
-        let json = self.cache.get_or_load(path)?;
-        let arr = json
-            .as_array()
-            .context("deepseek web export is not an array")?;
-        let item = arr
-            .iter()
-            .find(|item| item.get("id").and_then(Value::as_str) == Some(id))
-            .with_context(|| format!("session {id} not found in {}", path.display()))?;
+        let (json, at) = self.cache.locate(path, id, top_level_items)?;
+        let item =
+            item_at(&json, at, top_level_items).context("web export changed while it was read")?;
         parse_deepseek_item(path, id, item)
     }
 }
@@ -497,7 +726,7 @@ fn parse_deepseek_item(path: &Path, id: &str, item: &Value) -> Result<Session> {
             let Some(node) = mapping.get(&nid) else {
                 continue;
             };
-            let Some(msg) = node.get("message").and_then(Value::as_object) else {
+            let Some(msg) = node.get("message").filter(|m| m.is_object()) else {
                 continue;
             };
             let ts = msg
@@ -505,9 +734,22 @@ fn parse_deepseek_item(path: &Path, id: &str, item: &Value) -> Result<Session> {
                 .and_then(Value::as_str)
                 .and_then(parse_rfc3339_utc);
 
+            // DeepSeek keeps the chain of thought on the message, beside the
+            // fragments it produced. Thinking-typed fragments are read here
+            // rather than in the loop below, so one turn is not shown twice.
+            if let Some(reasoning) = reasoning_of(msg) {
+                messages.push(Message::plain(Role::Assistant, reasoning, ts));
+            }
+
             if let Some(fragments) = msg.get("fragments").and_then(Value::as_array) {
                 for frag in fragments {
                     let ftype = frag.get("type").and_then(Value::as_str).unwrap_or("");
+                    if matches!(
+                        ftype.to_ascii_lowercase().as_str(),
+                        "thinking" | "reasoning"
+                    ) {
+                        continue;
+                    }
                     let mut content = frag
                         .get("content")
                         .or_else(|| frag.get("text"))
@@ -549,7 +791,7 @@ fn parse_deepseek_item(path: &Path, id: &str, item: &Value) -> Result<Session> {
     let final_title = title.unwrap_or_else(|| title_from_messages(&messages));
 
     Ok(Session {
-        id: short_id(&key),
+        id: web_session_id("deepseek-web", id),
         tool: "deepseek-web",
         path: PathBuf::from(display_path(&key)),
         project: "web".to_string(),
@@ -570,6 +812,19 @@ fn parse_deepseek_item(path: &Path, id: &str, item: &Value) -> Result<Session> {
 #[derive(Default)]
 pub struct GeminiWeb {
     cache: JsonCache,
+}
+
+impl GeminiWeb {
+    /// The v4 exporter stamps each chat with the moment it was read out, so a
+    /// re-export into a new file still compares as the newer copy of it.
+    fn token(item: &Value, mtime: i64) -> i64 {
+        item.get("exported_at")
+            .and_then(Value::as_str)
+            .and_then(parse_rfc3339_utc)
+            .or_else(|| item.get("exported_at").and_then(parse_epoch_secs_or_ms))
+            .map(|dt| dt.timestamp_millis())
+            .unwrap_or(mtime)
+    }
 }
 
 impl Adapter for GeminiWeb {
@@ -597,33 +852,12 @@ impl Adapter for GeminiWeb {
     }
 
     fn store(&self) -> Option<Store> {
-        let (files, mut had_error) = discover_vendor_files("gemini");
-        let mut keys: Vec<(String, i64)> = Vec::new();
-
-        for file in &files {
-            let json = match self.cache.get_or_load(file) {
-                Ok(j) => j,
-                Err(_) => {
-                    had_error = true;
-                    continue;
-                }
-            };
-            let Some(arr) = json.as_array() else {
-                continue;
-            };
-            let mtime = file_mtime_ms(file);
-            for item in arr {
-                let Some(id) = item.get("id").and_then(Value::as_str) else {
-                    continue;
-                };
-                keys.push((make_key(file, id), mtime));
-            }
-        }
-
+        let (files, fs_error) = discover_vendor_files("gemini");
+        let (keys, read_error) = scan_store(&self.cache, &files, top_level_items, Self::token);
         Some(Store {
-            keys,
+            keys: keys.finish(),
             files,
-            had_error,
+            had_error: fs_error || read_error,
         })
     }
 
@@ -632,14 +866,9 @@ impl Adapter for GeminiWeb {
             .split_once(KEY_SEP)
             .context("malformed gemini-web key")?;
         let path = Path::new(file_str);
-        let json = self.cache.get_or_load(path)?;
-        let arr = json
-            .as_array()
-            .context("gemini web export is not an array")?;
-        let item = arr
-            .iter()
-            .find(|item| item.get("id").and_then(Value::as_str) == Some(id))
-            .with_context(|| format!("session {id} not found in {}", path.display()))?;
+        let (json, at) = self.cache.locate(path, id, top_level_items)?;
+        let item =
+            item_at(&json, at, top_level_items).context("web export changed while it was read")?;
         parse_gemini_item(path, id, item)
     }
 }
@@ -653,14 +882,26 @@ fn parse_gemini_item(path: &Path, id: &str, item: &Value) -> Result<Session> {
         .filter(|s| !s.is_empty())
         .map(|s| s.to_string());
 
-    let mtime = file_mtime_ms(path);
-    let started = DateTime::<Utc>::from_timestamp_millis(mtime);
+    // The v4 exporter stamps the chat with the moment it was read out and marks
+    // whether the whole thread came with it; older exports only have the file.
+    let exported = item
+        .get("exported_at")
+        .and_then(Value::as_str)
+        .and_then(parse_rfc3339_utc)
+        .or_else(|| item.get("exported_at").and_then(parse_epoch_secs_or_ms))
+        .or_else(|| DateTime::<Utc>::from_timestamp_millis(file_mtime_ms(path)));
+    let started = exported;
+    let ended = item
+        .get("updated_at")
+        .and_then(Value::as_str)
+        .and_then(parse_rfc3339_utc)
+        .or(started);
 
-    let mut messages: Vec<Message> = Vec::new();
+    let mut messages: Vec<(Option<i64>, usize, Message)> = Vec::new();
     let mut touched: Vec<String> = Vec::new();
 
     if let Some(msgs) = item.get("messages").and_then(Value::as_array) {
-        for m in msgs {
+        for (i, m) in msgs.iter().enumerate() {
             let role_str = m.get("role").and_then(Value::as_str).unwrap_or("user");
             let role = if role_str.eq_ignore_ascii_case("user") {
                 Role::User
@@ -673,23 +914,34 @@ fn parse_gemini_item(path: &Path, id: &str, item: &Value) -> Result<Session> {
                 .and_then(Value::as_str)
                 .unwrap_or("")
                 .trim();
+            let order = m.get("order").and_then(Value::as_i64);
+            // v4 keeps the model's reasoning beside its answer; it reads as the
+            // turn before the answer, which is where the chat showed it.
+            if let Some(reasoning) = reasoning_of(m) {
+                messages.push((order, i, Message::plain(Role::Assistant, reasoning, None)));
+            }
             if !text.is_empty() {
                 extract_code_block_paths(text, &mut touched);
-                messages.push(Message::plain(role, text, None));
+                messages.push((order, i, Message::plain(role, text, None)));
             }
         }
     }
+
+    // An out-of-order export is still read in the exporter's own order; files
+    // without `order` keep the array order they came in.
+    messages.sort_by_key(|entry| (entry.0.unwrap_or(entry.1 as i64), entry.1));
+    let messages: Vec<Message> = messages.into_iter().map(|(_, _, m)| m).collect();
 
     let touched = dedup_paths(touched);
     let final_title = title.unwrap_or_else(|| title_from_messages(&messages));
 
     Ok(Session {
-        id: short_id(&key),
+        id: web_session_id("gemini-web", id),
         tool: "gemini-web",
         path: PathBuf::from(display_path(&key)),
         project: "web".to_string(),
         started,
-        ended: started,
+        ended,
         title: final_title,
         subagent: false,
         parent_id: None,
@@ -705,6 +957,15 @@ fn parse_gemini_item(path: &Path, id: &str, item: &Value) -> Result<Session> {
 #[derive(Default)]
 pub struct QwenWeb {
     cache: JsonCache,
+}
+
+impl QwenWeb {
+    fn token(item: &Value, mtime: i64) -> i64 {
+        item.get("updated_at")
+            .or_else(|| item.get("created_at"))
+            .and_then(parse_timestamp_ms)
+            .unwrap_or(mtime)
+    }
 }
 
 impl Adapter for QwenWeb {
@@ -736,58 +997,21 @@ impl Adapter for QwenWeb {
     }
 
     fn store(&self) -> Option<Store> {
-        let (files, mut had_error) = discover_vendor_files("qwen");
-        let mut keys: Vec<(String, i64)> = Vec::new();
-
-        for file in &files {
-            let json = match self.cache.get_or_load(file) {
-                Ok(j) => j,
-                Err(_) => {
-                    had_error = true;
-                    continue;
-                }
-            };
-            let items = json
-                .get("data")
-                .and_then(Value::as_array)
-                .or_else(|| json.as_array());
-            let Some(arr) = items else {
-                continue;
-            };
-            let mtime = file_mtime_ms(file);
-            for item in arr {
-                let Some(id) = item.get("id").and_then(Value::as_str) else {
-                    continue;
-                };
-                let token = item
-                    .get("updated_at")
-                    .or_else(|| item.get("created_at"))
-                    .and_then(parse_timestamp_ms)
-                    .unwrap_or(mtime);
-                keys.push((make_key(file, id), token));
-            }
-        }
-
+        let (files, fs_error) = discover_vendor_files("qwen");
+        let (keys, read_error) = scan_store(&self.cache, &files, data_or_top_items, Self::token);
         Some(Store {
-            keys,
+            keys: keys.finish(),
             files,
-            had_error,
+            had_error: fs_error || read_error,
         })
     }
 
     fn parse_key(&self, key: &str) -> Result<Session> {
         let (file_str, id) = key.split_once(KEY_SEP).context("malformed qwen-web key")?;
         let path = Path::new(file_str);
-        let json = self.cache.get_or_load(path)?;
-        let items = json
-            .get("data")
-            .and_then(Value::as_array)
-            .or_else(|| json.as_array())
-            .context("qwen web export missing data array")?;
-        let item = items
-            .iter()
-            .find(|item| item.get("id").and_then(Value::as_str) == Some(id))
-            .with_context(|| format!("session {id} not found in {}", path.display()))?;
+        let (json, at) = self.cache.locate(path, id, data_or_top_items)?;
+        let item = item_at(&json, at, data_or_top_items)
+            .context("web export changed while it was read")?;
         parse_qwen_item(path, id, item)
     }
 }
@@ -845,6 +1069,9 @@ fn parse_qwen_item(path: &Path, id: &str, item: &Value) -> Result<Session> {
                 }
             }
 
+            if let Some(reasoning) = reasoning_of(m) {
+                messages.push(Message::plain(Role::Assistant, reasoning, ts));
+            }
             if !text.is_empty() {
                 extract_code_block_paths(&text, &mut touched);
                 messages.push(Message::plain(role, text, ts));
@@ -856,7 +1083,7 @@ fn parse_qwen_item(path: &Path, id: &str, item: &Value) -> Result<Session> {
     let final_title = title.unwrap_or_else(|| title_from_messages(&messages));
 
     Ok(Session {
-        id: short_id(&key),
+        id: web_session_id("qwen-web", id),
         tool: "qwen-web",
         path: PathBuf::from(display_path(&key)),
         project: "web".to_string(),
@@ -877,6 +1104,15 @@ fn parse_qwen_item(path: &Path, id: &str, item: &Value) -> Result<Session> {
 #[derive(Default)]
 pub struct GlmWeb {
     cache: JsonCache,
+}
+
+impl GlmWeb {
+    fn token(item: &Value, mtime: i64) -> i64 {
+        item.get("updated_at")
+            .or_else(|| item.get("created_at"))
+            .and_then(parse_timestamp_ms)
+            .unwrap_or(mtime)
+    }
 }
 
 impl Adapter for GlmWeb {
@@ -904,50 +1140,21 @@ impl Adapter for GlmWeb {
     }
 
     fn store(&self) -> Option<Store> {
-        let (files, mut had_error) = discover_vendor_files("glm");
-        let mut keys: Vec<(String, i64)> = Vec::new();
-
-        for file in &files {
-            let json = match self.cache.get_or_load(file) {
-                Ok(j) => j,
-                Err(_) => {
-                    had_error = true;
-                    continue;
-                }
-            };
-            let Some(arr) = json.as_array() else {
-                continue;
-            };
-            let mtime = file_mtime_ms(file);
-            for item in arr {
-                let Some(id) = item.get("id").and_then(Value::as_str) else {
-                    continue;
-                };
-                let token = item
-                    .get("updated_at")
-                    .or_else(|| item.get("created_at"))
-                    .and_then(parse_timestamp_ms)
-                    .unwrap_or(mtime);
-                keys.push((make_key(file, id), token));
-            }
-        }
-
+        let (files, fs_error) = discover_vendor_files("glm");
+        let (keys, read_error) = scan_store(&self.cache, &files, top_level_items, Self::token);
         Some(Store {
-            keys,
+            keys: keys.finish(),
             files,
-            had_error,
+            had_error: fs_error || read_error,
         })
     }
 
     fn parse_key(&self, key: &str) -> Result<Session> {
         let (file_str, id) = key.split_once(KEY_SEP).context("malformed glm-web key")?;
         let path = Path::new(file_str);
-        let json = self.cache.get_or_load(path)?;
-        let arr = json.as_array().context("glm web export is not an array")?;
-        let item = arr
-            .iter()
-            .find(|item| item.get("id").and_then(Value::as_str) == Some(id))
-            .with_context(|| format!("session {id} not found in {}", path.display()))?;
+        let (json, at) = self.cache.locate(path, id, top_level_items)?;
+        let item =
+            item_at(&json, at, top_level_items).context("web export changed while it was read")?;
         parse_glm_item(path, id, item)
     }
 }
@@ -1012,6 +1219,9 @@ fn parse_glm_item(path: &Path, id: &str, item: &Value) -> Result<Session> {
                     .and_then(Value::as_str)
                     .unwrap_or("")
                     .trim();
+                if let Some(reasoning) = reasoning_of(m) {
+                    messages.push(Message::plain(Role::Assistant, reasoning, ts));
+                }
                 if !text.is_empty() {
                     extract_code_block_paths(text, &mut touched);
                     messages.push(Message::plain(role, text, ts));
@@ -1024,7 +1234,7 @@ fn parse_glm_item(path: &Path, id: &str, item: &Value) -> Result<Session> {
     let final_title = title.unwrap_or_else(|| title_from_messages(&messages));
 
     Ok(Session {
-        id: short_id(&key),
+        id: web_session_id("glm-web", id),
         tool: "glm-web",
         path: PathBuf::from(display_path(&key)),
         project: "web".to_string(),
@@ -1043,107 +1253,328 @@ fn parse_glm_item(path: &Path, id: &str, item: &Value) -> Result<Session> {
 mod tests {
     use super::*;
 
+    // Synthetic exports shaped like the real vendor files, one chat with a
+    // title and one without, so the fallback and the container of each vendor
+    // are both read by every run. They live in tests/fixtures because a test
+    // over someone's own chat history checks nothing: it passes silently when
+    // the file is missing and fails for unrelated reasons when it is not.
+    const CHAT1: &str = "11111111-aaaa-4bbb-8ccc-000000000001";
+    const CHAT2: &str = "11111111-aaaa-4bbb-8ccc-000000000002";
+
+    fn fixture(vendor: &str) -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/web_chat")
+            .join(format!("{vendor}.json"))
+    }
+
+    fn parse(vendor: &str, adapter: &dyn Adapter, native: &str) -> Session {
+        let path = fixture(vendor);
+        adapter
+            .parse_key(&make_key(&path, native))
+            .unwrap_or_else(|e| panic!("{vendor} chat {native}: {e}"))
+    }
+
+    fn roles(session: &Session) -> Vec<Role> {
+        session.messages.iter().map(|m| m.role).collect()
+    }
+
+    fn body<'a>(session: &'a Session, needle: &str) -> Option<&'a Message> {
+        session.messages.iter().find(|m| m.text.contains(needle))
+    }
+
     #[test]
-    fn test_claude_web_parsing() {
-        let claude = ClaudeWeb::default();
-        let sample_path = Path::new(r"D:\wikiagents\web_session\conversations_claude.json");
-        if sample_path.is_file() {
-            let session = claude.parse(sample_path).expect("parse claude");
-            assert_eq!(session.tool, "claude-web");
-            assert!(!session.messages.is_empty());
+    fn claude_chats_carry_their_thinking_and_the_paths_an_answer_names() {
+        let first = parse("claude", &ClaudeWeb::default(), CHAT1);
+        assert_eq!(first.tool, "claude-web");
+        assert_eq!(first.title, "Fix the flaky upload test");
+        assert_eq!(
+            roles(&first),
+            vec![Role::User, Role::Assistant, Role::Assistant, Role::User],
+            "the reasoning block reads as its own turn, before the answer it produced"
+        );
+        assert!(
+            body(&first, "usually means a fixed sleep").is_some(),
+            "the thinking block was kept"
+        );
+        assert!(body(&first, "hard-coded sleep").is_some());
+        assert_eq!(
+            first.started.unwrap().to_rfc3339(),
+            "2026-03-02T09:00:00+00:00"
+        );
+
+        let second = parse("claude", &ClaudeWeb::default(), CHAT2);
+        assert!(
+            second.title.starts_with("How do I list files"),
+            "an unnamed chat is titled by its first prompt, got {:?}",
+            second.title
+        );
+        assert_eq!(
+            second.touched,
+            vec!["D:/data/reports/summary.csv".to_string()],
+            "a path the answer names is a file the chat touched"
+        );
+        assert_eq!(roles(&second), vec![Role::User, Role::Assistant]);
+    }
+
+    #[test]
+    fn deepseek_walks_the_mapping_and_lists_its_attachments() {
+        let adapter = DeepSeekWeb::default();
+        let first = parse("deepseek", &adapter, "2222222222222222222222222222aaaa");
+        assert_eq!(first.title, "Rotate the deploy keys");
+        assert_eq!(
+            roles(&first),
+            vec![Role::User, Role::Assistant, Role::Assistant]
+        );
+        assert!(
+            body(&first, "Two keys must be live at once").is_some(),
+            "the message's reasoning_content was kept"
+        );
+
+        let second = parse("deepseek", &adapter, "2222222222222222222222222222bbbb");
+        assert_eq!(roles(&second), vec![Role::User, Role::User]);
+        assert!(
+            body(&second, "images.txt").is_some(),
+            "a FILE fragment names the attachment"
+        );
+    }
+
+    #[test]
+    fn gemini_uses_the_export_stamp_and_the_exporters_own_order() {
+        let adapter = GeminiWeb::default();
+        let first = parse("gemini", &adapter, "gemini-chat-0001");
+        assert_eq!(first.title, "Summarise this changelog");
+        assert_eq!(
+            first.started.unwrap().to_rfc3339(),
+            "2026-05-01T10:00:00+00:00",
+            "the export stamp dates the chat, not the file it was read out into"
+        );
+        assert!(
+            body(&first, "one line per theme").is_some(),
+            "thinking kept"
+        );
+
+        let second = parse("gemini", &adapter, "gemini-chat-0002");
+        assert_eq!(
+            roles(&second),
+            vec![Role::User, Role::Assistant],
+            "the export wrote the model turn first; `order` says the prompt came before it"
+        );
+    }
+
+    #[test]
+    fn qwen_reads_the_wrapped_chats_and_prefers_the_plain_answer() {
+        let adapter = QwenWeb::default();
+        let first = parse("qwen", &adapter, "33333333-3333-4333-8333-000000000001");
+        assert_eq!(first.title, "Postgres index bloat");
+        assert_eq!(
+            roles(&first),
+            vec![Role::User, Role::Assistant, Role::Assistant]
+        );
+        assert!(
+            body(&first, "update-heavy writes").is_some(),
+            "reasoning_content was kept"
+        );
+
+        let second = parse("qwen", &adapter, "33333333-3333-4333-8333-000000000002");
+        assert_eq!(roles(&second), vec![Role::User, Role::Assistant]);
+        let repeated = second
+            .messages
+            .iter()
+            .filter(|m| m.text.contains("docker compose logs"))
+            .count();
+        assert_eq!(
+            repeated, 1,
+            "a chat with both `content` and `content_list` is one answer, not two"
+        );
+    }
+
+    #[test]
+    fn glm_walks_the_reply_chain_and_falls_back_to_timestamps() {
+        let adapter = GlmWeb::default();
+        let first = parse("glm", &adapter, "44444444-4444-4444-8444-000000000001");
+        assert_eq!(first.title, "Zig cross-compile for Android");
+        assert_eq!(
+            roles(&first),
+            vec![Role::User, Role::Assistant, Role::Assistant]
+        );
+        assert!(
+            body(&first, "people miss").is_some(),
+            "reasoning_content was kept"
+        );
+
+        let second = parse("glm", &adapter, "44444444-4444-4444-8444-000000000002");
+        assert_eq!(
+            roles(&second),
+            vec![Role::User, Role::Assistant],
+            "with no currentId the chat is read in timestamp order"
+        );
+    }
+
+    #[test]
+    fn one_chat_is_one_session_whatever_file_holds_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let reexported = dir.path().join("claude-2026-06.json");
+        std::fs::copy(fixture("claude"), &reexported).unwrap();
+
+        let adapter = ClaudeWeb::default();
+        let original = parse("claude", &adapter, CHAT1);
+        let moved = adapter.parse_key(&make_key(&reexported, CHAT1)).unwrap();
+        assert_eq!(
+            original.id, moved.id,
+            "re-exporting a chat into a new file must not make a second session of it"
+        );
+        assert_ne!(
+            original.path, moved.path,
+            "each export still knows where it read the chat from"
+        );
+        assert_ne!(
+            original.id,
+            parse("claude", &adapter, CHAT2).id,
+            "two chats of one export are two sessions"
+        );
+    }
+
+    #[test]
+    fn scan_prefers_the_newest_export_of_a_chat() {
+        let dir = tempfile::tempdir().unwrap();
+        let older = dir.path().join("claude-older.json");
+        let newer = dir.path().join("claude-newer.json");
+        write(&older, &chat(CHAT1, "2026-03-02T09:12:00.000Z", 3));
+        write(&newer, &chat(CHAT1, "2026-06-11T09:12:00.000Z", 4));
+
+        // Listed in either order, the same conversation comes back once and from
+        // the export that has the newer timestamp.
+        for files in [&[&older, &newer], &[&newer, &older]] {
+            let owned: Vec<PathBuf> = files.iter().map(|p| (*p).clone()).collect();
+            let (keys, had_error) = scan_store(
+                &JsonCache::default(),
+                &owned,
+                top_level_items,
+                ClaudeWeb::token,
+            );
+            assert!(!had_error);
+            let listed = keys.finish();
+            assert_eq!(listed.len(), 1, "one chat in two files is one session");
+            assert_eq!(
+                file_part_of_key(&listed[0].0),
+                Some(newer.to_str().unwrap()),
+                "the newest export of the chat is the one indexed"
+            );
         }
     }
 
     #[test]
-    fn test_deepseek_web_parsing() {
-        let deepseek = DeepSeekWeb::default();
-        let sample_path = Path::new(r"D:\wikiagents\web_session\conversations_deepseek.json");
-        if sample_path.is_file() {
-            let session = deepseek.parse(sample_path).expect("parse deepseek");
-            assert_eq!(session.tool, "deepseek-web");
-            assert!(!session.messages.is_empty());
-        }
+    fn an_equal_timestamp_goes_to_the_export_that_holds_more_of_the_chat() {
+        let dir = tempfile::tempdir().unwrap();
+        let short = dir.path().join("claude-short.json");
+        let long = dir.path().join("claude-long.json");
+        write(&short, &chat(CHAT1, "2026-03-02T09:12:00.000Z", 1));
+        write(&long, &chat(CHAT1, "2026-03-02T09:12:00.000Z", 5));
+
+        let owned = vec![short.clone(), long.clone()];
+        let (keys, _) = scan_store(
+            &JsonCache::default(),
+            &owned,
+            top_level_items,
+            ClaudeWeb::token,
+        );
+        let listed = keys.finish();
+        assert_eq!(file_part_of_key(&listed[0].0), Some(long.to_str().unwrap()));
+
+        // The v4 Gemini exporter marks a chat it read whole, so a complete
+        // export of one timestamp beats a truncated one.
+        let mut truncated = chat(CHAT1, "2026-05-01T10:00:00.000Z", 2);
+        truncated["complete"] = serde_json::json!(false);
+        let mut complete = chat(CHAT1, "2026-05-01T10:00:00.000Z", 2);
+        complete["complete"] = serde_json::json!(true);
+        assert!(
+            message_count_of(&complete) > message_count_of(&truncated),
+            "the complete flag is what breaks the tie"
+        );
     }
 
     #[test]
-    fn test_gemini_web_parsing() {
-        let gemini = GeminiWeb::default();
-        let sample_path =
-            Path::new(r"D:\wikiagents\web_session\gemini_conversations_ALL_34_chats.json");
-        if sample_path.is_file() {
-            let session = gemini.parse(sample_path).expect("parse gemini");
-            assert_eq!(session.tool, "gemini-web");
-        }
+    fn tokens_come_from_the_chat_and_fall_back_to_the_file() {
+        let updated = chat(CHAT1, "2026-03-02T09:12:00.000Z", 1);
+        assert_eq!(
+            ClaudeWeb::token(&updated, 7),
+            DateTime::parse_from_rfc3339("2026-03-02T09:12:00.000Z")
+                .unwrap()
+                .timestamp_millis()
+        );
+        // An export with no stamp at all still compares by the file it came from.
+        assert_eq!(ClaudeWeb::token(&serde_json::json!({}), 7), 7);
+        assert_eq!(GeminiWeb::token(&serde_json::json!({}), 7), 7);
+
+        let stamped = serde_json::json!({ "exported_at": "2026-05-01T10:00:00.000Z" });
+        assert_eq!(
+            GeminiWeb::token(&stamped, 7),
+            DateTime::parse_from_rfc3339("2026-05-01T10:00:00.000Z")
+                .unwrap()
+                .timestamp_millis()
+        );
+        // ... and as milliseconds, the other spelling the exporter uses.
+        assert_eq!(
+            GeminiWeb::token(
+                &serde_json::json!({ "exported_at": 1_777_000_000_000i64 }),
+                7
+            ),
+            1_777_000_000_000
+        );
     }
 
     #[test]
-    fn test_qwen_web_parsing() {
-        let qwen = QwenWeb::default();
-        let sample_path =
-            Path::new(r"D:\wikiagents\web_session\qwen_chat-export-1793387130342.json");
-        if sample_path.is_file() {
-            let session = qwen.parse(sample_path).expect("parse qwen");
-            assert_eq!(session.tool, "qwen-web");
-            assert!(!session.messages.is_empty());
-        }
+    fn reasoning_is_read_where_each_vendor_puts_it() {
+        let as_block = serde_json::json!({
+            "content": [{ "type": "thinking", "thinking": "in the block" },
+                        { "type": "text", "text": "the answer" }]
+        });
+        assert_eq!(reasoning_of(&as_block).as_deref(), Some("in the block"));
+        let as_field = serde_json::json!({ "reasoning_content": "in the field" });
+        assert_eq!(reasoning_of(&as_field).as_deref(), Some("in the field"));
+        assert_eq!(
+            reasoning_of(&serde_json::json!({ "content": "plain" })),
+            None
+        );
+        assert_eq!(
+            reasoning_of(&serde_json::json!({ "reasoning_content": "   " })),
+            None,
+            "blank reasoning is not a turn"
+        );
     }
 
     #[test]
-    fn test_glm_web_parsing() {
-        let glm = GlmWeb::default();
-        let sample_path =
-            Path::new(r"D:\wikiagents\web_session\archived-chat-export-1793387426982_glm.json");
-        if sample_path.is_file() {
-            let session = glm.parse(sample_path).expect("parse glm");
-            assert_eq!(session.tool, "glm-web");
-            assert!(!session.messages.is_empty());
-        }
+    fn a_store_key_split_back_out_is_the_key_it_came_from() {
+        // index.rs reconciles the store with these halves: the file decides
+        // whether a superseded export still exists, the id which chat won.
+        let path = fixture("claude");
+        let key = make_key(&path, CHAT1);
+        assert_eq!(file_part_of_key(&key), Some(path.to_str().unwrap()));
+        assert_eq!(native_part_of_key(&key), Some(CHAT1));
+        assert_eq!(native_part_of_key("/store/plain.jsonl"), None);
     }
 
-    #[test]
-    fn test_web_stores_and_keys() {
-        let claude = ClaudeWeb::default();
-        if let Some(store) = claude.store() {
-            assert_eq!(store.keys.len(), 209);
-            let first_key = &store.keys[0].0;
-            let session = claude.parse_key(first_key).expect("parse_key claude");
-            assert_eq!(session.tool, "claude-web");
-            assert!(!session.messages.is_empty());
-        }
+    /// A chat with `count` messages, stamped `updated_at`, in Claude's shape -
+    /// enough for the store scan, which reads ids, stamps and message counts.
+    fn chat(id: &str, updated_at: &str, count: usize) -> Value {
+        let messages: Vec<Value> = (0..count)
+            .map(|i| {
+                serde_json::json!({
+                    "sender": if i % 2 == 0 { "human" } else { "assistant" },
+                    "text": format!("message {i}"),
+                })
+            })
+            .collect();
+        serde_json::json!({
+            "uuid": id,
+            "name": "One chat, two exports",
+            "created_at": "2026-03-02T09:00:00.000Z",
+            "updated_at": updated_at,
+            "chat_messages": messages,
+        })
+    }
 
-        let deepseek = DeepSeekWeb::default();
-        if let Some(store) = deepseek.store() {
-            assert_eq!(store.keys.len(), 177);
-            let first_key = &store.keys[0].0;
-            let session = deepseek.parse_key(first_key).expect("parse_key deepseek");
-            assert_eq!(session.tool, "deepseek-web");
-            assert!(!session.messages.is_empty());
-        }
-
-        let gemini = GeminiWeb::default();
-        if let Some(store) = gemini.store() {
-            assert_eq!(store.keys.len(), 34);
-            let first_key = &store.keys[0].0;
-            let session = gemini.parse_key(first_key).expect("parse_key gemini");
-            assert_eq!(session.tool, "gemini-web");
-        }
-
-        let qwen = QwenWeb::default();
-        if let Some(store) = qwen.store() {
-            assert_eq!(store.keys.len(), 307);
-            let first_key = &store.keys[0].0;
-            let session = qwen.parse_key(first_key).expect("parse_key qwen");
-            assert_eq!(session.tool, "qwen-web");
-            assert!(!session.messages.is_empty());
-        }
-
-        let glm = GlmWeb::default();
-        if let Some(store) = glm.store() {
-            assert_eq!(store.keys.len(), 144);
-            let first_key = &store.keys[0].0;
-            let session = glm.parse_key(first_key).expect("parse_key glm");
-            assert_eq!(session.tool, "glm-web");
-            assert!(!session.messages.is_empty());
-        }
+    fn write(path: &Path, item: &Value) {
+        std::fs::write(path, serde_json::to_vec_pretty(&[item]).unwrap()).unwrap();
     }
 }

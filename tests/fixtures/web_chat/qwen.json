@@ -1,0 +1,49 @@
+{
+  "success": true,
+  "data": [
+    {
+      "id": "33333333-3333-4333-8333-000000000001",
+      "title": "Postgres index bloat",
+      "created_at": 1745900000,
+      "updated_at": 1745900600,
+      "chat": {
+        "messages": [
+          {
+            "role": "user",
+            "content": "Our orders table index grew to 4 GB while the table is 900 MB. Why?",
+            "timestamp": 1745900000
+          },
+          {
+            "role": "assistant",
+            "content": "Dead tuples from the nightly bulk updates. REINDEX CONCURRENTLY, then lower fillfactor.",
+            "reasoning_content": "Bloat this large points at update-heavy writes without vacuum keeping up, so I check fillfactor first.",
+            "timestamp": 1745900600,
+            "feature_config": { "thinking_enabled": true }
+          }
+        ]
+      }
+    },
+    {
+      "id": "33333333-3333-4333-8333-000000000002",
+      "title": "",
+      "created_at": 1746000000,
+      "updated_at": 1746000300,
+      "chat": {
+        "messages": [
+          {
+            "role": "user",
+            "content": "How do I tail Docker logs for two containers at once?",
+            "timestamp": 1746000000
+          },
+          {
+            "role": "assistant",
+            "content": "docker compose logs -f api worker",
+            "content_list": [{ "content": "docker compose logs -f api worker" }],
+            "reasoning_content": null,
+            "timestamp": 1746000300
+          }
+        ]
+      }
+    }
+  ]
+}

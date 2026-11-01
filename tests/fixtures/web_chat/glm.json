@@ -1,0 +1,60 @@
+[
+  {
+    "id": "44444444-4444-4444-8444-000000000001",
+    "title": "Zig cross-compile for Android",
+    "created_at": 1747180000,
+    "updated_at": 1747180900,
+    "chat": {
+      "enable_thinking": true,
+      "history": {
+        "currentId": "g2",
+        "messages": {
+          "g1": {
+            "id": "g1",
+            "role": "user",
+            "parentId": null,
+            "childrenIds": ["g2"],
+            "content": "How do I cross-compile a Zig binary for Android arm64?",
+            "timestamp": 1747180000
+          },
+          "g2": {
+            "id": "g2",
+            "role": "assistant",
+            "parentId": "g1",
+            "childrenIds": [],
+            "content": "Use -target aarch64-linux-android with the NDK sysroot passed via -lcflags.",
+            "reasoning_content": "The NDK sysroot is the part people miss, so I lead with the target triple and the sysroot flag.",
+            "timestamp": 1747180900
+          }
+        }
+      }
+    }
+  },
+  {
+    "id": "44444444-4444-4444-8444-000000000002",
+    "title": "",
+    "created_at": 1747200000,
+    "updated_at": 1747200300,
+    "chat": {
+      "history": {
+        "currentId": null,
+        "messages": {
+          "h2": {
+            "id": "h2",
+            "role": "assistant",
+            "parentId": "h1",
+            "content": "rg --files-without-match TODO src/",
+            "timestamp": 1747200300
+          },
+          "h1": {
+            "id": "h1",
+            "role": "user",
+            "parentId": null,
+            "content": "Find files that have no TODO markers left.",
+            "timestamp": 1747200000
+          }
+        }
+      }
+    }
+  }
+]

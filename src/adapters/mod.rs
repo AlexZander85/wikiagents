@@ -245,6 +245,14 @@ const READER_OVERRIDES: &[(&str, i64)] = &[
     // 1.3 also un-escapes the double-escaped `D:\\proj` paths this tool writes,
     // which only a re-parse can fix.
     ("antigravity", 3),
+    // 4: the web adapters now take a chat's id from the chat itself instead of
+    // from the export file, and keep the model's thinking blocks. Only these
+    // tools need their sessions read again.
+    ("claude-web", 4),
+    ("deepseek-web", 4),
+    ("gemini-web", 4),
+    ("qwen-web", 4),
+    ("glm-web", 4),
 ];
 
 /// The tools whose parser version is deliberately not the global one, so a test

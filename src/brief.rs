@@ -1773,10 +1773,19 @@ impl<'a> Brief<'a> {
     /// often each was edited, and whether it is a scratch file; the same file
     /// written as absolute and relative path counts once.
     fn changed_files(&self) -> Vec<(String, usize, bool)> {
-        let raw: Vec<String> = if !self.session.edits.is_empty() {
+        // A stored edit or touched row is structured: the plausibility filter
+        // below exists for transcript text, and running the rows through it is
+        // what left a brief saying "0 files changed" beside turns that showed
+        // eleven edits - every path with a parenthesis or a quote in it, which
+        // is what antigravity records for a project folder named like that.
+        let rows: Vec<String> = if !self.session.edits.is_empty() {
             self.session.edits.iter().map(|e| e.path.clone()).collect()
-        } else if !self.session.touched.is_empty() {
+        } else {
             self.session.touched.clone()
+        };
+        let from_rows = rows.iter().any(|p| !p.trim().is_empty());
+        let raw: Vec<String> = if from_rows {
+            rows
         } else {
             self.turns
                 .iter()
@@ -1789,7 +1798,14 @@ impl<'a> Brief<'a> {
         let prefix = format!("{}/", project.trim_end_matches('/').to_lowercase());
         let mut counts: Vec<(String, usize, bool)> = Vec::new();
         let mut index: HashMap<String, usize> = HashMap::new();
-        for path in raw.iter().filter(|p| is_plausible_path(p)) {
+        let usable = |p: &&String| {
+            if from_rows {
+                is_recorded_path(p)
+            } else {
+                is_plausible_path(p)
+            }
+        };
+        for path in raw.iter().filter(usable) {
             let norm = normalize_path(path);
             let shown = if !project.is_empty() && norm.to_lowercase().starts_with(&prefix) {
                 norm[prefix.len()..].to_string()
@@ -2183,11 +2199,18 @@ fn normalize_path(p: &str) -> String {
 }
 
 /// Some stores record a whole inline script where a path belongs.
+/// A path taken from a stored row: only its shape is checked. A real file name
+/// may hold parentheses or quotes, so the characters below are not evidence it
+/// is transcript noise.
+fn is_recorded_path(p: &str) -> bool {
+    let p = p.trim();
+    !p.is_empty() && p.len() <= 260 && !p.contains('\n')
+}
+
 fn is_plausible_path(p: &str) -> bool {
     let p = p.trim();
-    !p.is_empty()
-        && p.len() <= 260
-        && !p.contains(['\n', '"', '\'', '(', ')', '=', '{', '}', ';', '<', '>'])
+    is_recorded_path(p)
+        && !p.contains(['"', '\'', '(', ')', '=', '{', '}', ';', '<', '>'])
         && !p.starts_with("import ")
 }
 
@@ -2436,6 +2459,68 @@ mod tests {
             "low-information filler is not quoted: {out}"
         );
         assert!(out.len() <= 6500, "within budget: {}", out.len());
+    }
+
+    #[test]
+    fn a_recorded_path_survives_the_transcript_filter() {
+        use crate::model::{EditEvent, EditKind};
+        // What this covers: a brief whose header said "0 files changed" beside
+        // turns that showed the edits, because every stored path came from a
+        // folder named `game (demo)` and the transcript filter dropped it for
+        // the parenthesis.
+        let mut s = session(vec![
+            msg(Role::User, "Move the save files to the new format."),
+            msg(
+                Role::Assistant,
+                "Rewrote the loader and the writer; both builds pass.",
+            ),
+            tool(
+                "edit_file",
+                "file_path",
+                "D:/game (demo)/src/save.cs",
+                true,
+                "ok",
+            ),
+            tool(
+                "write_file",
+                "file_path",
+                "D:/game (demo)/src/loader.cs",
+                true,
+                "ok",
+            ),
+        ]);
+        s.tool = "antigravity";
+        s.project = "D:/game (demo)".into();
+        for path in ["D:/game (demo)/src/save.cs", "D:/game (demo)/src/loader.cs"] {
+            s.edits.push(EditEvent {
+                path: path.into(),
+                kind: EditKind::Edit,
+                snippet: "old -> new".into(),
+                ts: None,
+            });
+        }
+
+        let brief = Brief::new(&s, segment(&s), 4000);
+        let mut names: Vec<String> = brief
+            .changed_files()
+            .into_iter()
+            .map(|(p, _, _)| p)
+            .collect();
+        names.sort();
+        assert_eq!(
+            names,
+            vec!["src/loader.cs".to_string(), "src/save.cs".to_string()],
+            "the recorded paths are the changed files, project prefix dropped"
+        );
+        assert!(
+            brief.header(false).contains("2 files changed"),
+            "the header counts what the turns show: {}",
+            brief.header(false)
+        );
+        assert!(
+            short_summary(&s).unwrap().contains("✎2"),
+            "and so does the list line"
+        );
     }
 
     #[test]

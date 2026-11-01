@@ -4624,6 +4624,35 @@ function postProcessMarkdown(container) {
   linkifyFileReferences(container, currentSession);
 }
 
+// A commit host is not one URL shape: GitLab puts `/-/` before its blob path,
+// Bitbucket has no blob at all and calls it `src`, and each of them spells a
+// line range differently. GitHub is the default because that is what a session
+// without a recognisable host most likely points at.
+function gitWebTarget(gitRemote, gitBranch, relPath, lineStart, lineEnd) {
+  if (!gitRemote) return null;
+  const host = ((gitRemote.match(/^https?:\/\/([^/]+)/) || [])[1] || "").toLowerCase();
+  const onGitLab = host.includes("gitlab");
+  const onBitbucket = !onGitLab && host.includes("bitbucket");
+  const path = encodeURI(relPath);
+  let fragment = "";
+  if (lineStart) {
+    if (onBitbucket) {
+      fragment = `#lines-${lineStart}${lineEnd ? `:${lineEnd}` : ""}`;
+    } else if (onGitLab) {
+      fragment = `#L${lineStart}${lineEnd ? `-${lineEnd}` : ""}`;
+    } else {
+      fragment = `#L${lineStart}${lineEnd ? `-L${lineEnd}` : ""}`;
+    }
+  }
+  const url = onGitLab
+    ? `${gitRemote}/-/blob/${gitBranch}/${path}${fragment}`
+    : onBitbucket
+      ? `${gitRemote}/src/${gitBranch}/${path}${fragment}`
+      : `${gitRemote}/blob/${gitBranch}/${path}${fragment}`;
+  const label = onGitLab ? "GitLab" : onBitbucket ? "Bitbucket" : "GitHub";
+  return { url, label, fragment };
+}
+
 function linkifyFileReferences(container, s) {
   if (!container || !s) return;
   const gitRemote = s.git_remote;
@@ -4657,11 +4686,20 @@ function linkifyFileReferences(container, s) {
       relPath = filePath.replace(/\\/g, "/");
     }
     if (relPath && gitRemote) {
-      a.href = `${gitRemote}/blob/${gitBranch}/${encodeURI(relPath)}${lineFrag}`;
-      a.target = "_blank";
-      a.rel = "noopener noreferrer";
-      a.classList.add("file-web-link");
-      a.title = `Open on GitHub (${gitBranch}): ${relPath}`;
+      // The fragment is rebuilt for the host: a GitHub `#L10-L20` anchor means
+      // nothing to GitLab or Bitbucket. Anything that is not a line anchor
+      // (`#usage`) is left as the author wrote it.
+      const lines = lineFrag.match(/^#L?([0-9]+)(?:-L?([0-9]+))?$/i);
+      const target = lines
+        ? gitWebTarget(gitRemote, gitBranch, relPath, lines[1], lines[2])
+        : gitWebTarget(gitRemote, gitBranch, relPath, null, null);
+      if (target) {
+        a.href = lines ? target.url : `${target.url}${lineFrag}`;
+        a.target = "_blank";
+        a.rel = "noopener noreferrer";
+        a.classList.add("file-web-link");
+        a.title = `Open on ${target.label} (${gitBranch}): ${relPath}`;
+      }
     }
   });
 
@@ -4684,21 +4722,22 @@ function linkifyFileReferences(container, s) {
     }
 
     const normRel = relFile.replace(/\\/g, "/");
-    const webUrl = gitRemote ? `${gitRemote}/blob/${gitBranch}/${normRel}${lineHash}` : null;
+    const target = gitWebTarget(gitRemote, gitBranch, normRel, lineStart, lineEnd);
     const fullLocalPath = projectRoot ? (projectRoot.replace(/[\/\\]$/, "") + "/" + normRel) : normRel;
     const editorLine = lineStart ? `:${lineStart}` : "";
     const vscodeUrl = `vscode://file/${fullLocalPath}${editorLine}`;
+    const cursorUrl = `cursor://file/${fullLocalPath}${editorLine}`;
 
     const wrapper = document.createElement("span");
     wrapper.className = "file-link-wrap";
 
-    if (webUrl) {
+    if (target) {
       const link = document.createElement("a");
       link.className = "file-web-link";
-      link.href = webUrl;
+      link.href = target.url;
       link.target = "_blank";
       link.rel = "noopener noreferrer";
-      link.title = `Open on GitHub (${gitBranch}): ${normRel}${lineHash}`;
+      link.title = `Open on ${target.label} (${gitBranch}): ${normRel}${lineHash}`;
       codeEl.parentNode.insertBefore(wrapper, codeEl);
       link.appendChild(codeEl);
       wrapper.appendChild(link);
@@ -4710,9 +4749,16 @@ function linkifyFileReferences(container, s) {
     const editBtn = document.createElement("a");
     editBtn.className = "file-editor-btn";
     editBtn.href = vscodeUrl;
-    editBtn.title = `Open in VS Code / Cursor: ${fullLocalPath}${editorLine}`;
+    editBtn.title = `Open in VS Code: ${fullLocalPath}${editorLine}`;
     editBtn.innerHTML = `<svg viewBox="0 0 16 16" width="10" height="10" fill="currentColor"><path d="M11.5 0a1.5 1.5 0 0 1 1.06.44l3 3a1.5 1.5 0 0 1 0 2.12l-9.5 9.5a1.5 1.5 0 0 1-.7.4l-4.5 1a.5.5 0 0 1-.6-.6l1-4.5a1.5 1.5 0 0 1 .4-.7l9.5-9.5A1.5 1.5 0 0 1 11.5 0zm-1 2L2.5 10l-.7 3.2 3.2-.7L13 4.5 10.5 2z"/></svg>`;
     wrapper.appendChild(editBtn);
+
+    const cursorBtn = document.createElement("a");
+    cursorBtn.className = "file-editor-btn";
+    cursorBtn.href = cursorUrl;
+    cursorBtn.title = `Open in Cursor: ${fullLocalPath}${editorLine}`;
+    cursorBtn.innerHTML = `<svg viewBox="0 0 16 16" width="10" height="10" fill="currentColor"><path d="M1 1l5.2 13.4 1.7-5.6 5.6-1.7z"/></svg>`;
+    wrapper.appendChild(cursorBtn);
   });
 }
 

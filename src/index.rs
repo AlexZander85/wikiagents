@@ -1444,6 +1444,49 @@ struct ArchiveRow {
     archived_at: String,
 }
 
+/// Move what the user added to a session onto the id it answers to now.
+///
+/// A parser fix can respell an id - the web-chat adapters used to hash the
+/// export file into it - and the same key then re-indexes under a new one. The
+/// curation rows (marks, notes, snippets) belong to the conversation, so they
+/// follow it; the transcript under the old id is the same conversation read by
+/// an older parser, so it goes, unless another file still lists it.
+fn carry_identity_over(tx: &rusqlite::Transaction, key: &str, new_id: &str) -> Result<()> {
+    let previous: Option<String> = tx
+        .query_row(
+            "SELECT session_id FROM files WHERE path = ?1 AND session_id <> ?2",
+            params![key, new_id],
+            |r| r.get(0),
+        )
+        .optional()?;
+    let Some(old_id) = previous else {
+        return Ok(());
+    };
+    for table in ["tags", "notes", "summaries", "favorites", "snippets"] {
+        tx.execute(
+            &format!("UPDATE OR IGNORE {table} SET session_id = ?2 WHERE session_id = ?1"),
+            params![old_id, new_id],
+        )?;
+    }
+    // The row being replaced is the one that named the old id; drop it first so
+    // the reference check below sees only the other spellings of this session.
+    tx.execute(
+        "DELETE FROM files WHERE path = ?1 AND session_id = ?2",
+        params![key, old_id],
+    )?;
+    let still_listed: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM files WHERE session_id = ?1)",
+        params![old_id],
+        |r| r.get(0),
+    )?;
+    if !still_listed {
+        delete_session_msgs(tx, &old_id)?;
+        delete_session_provenance(tx, &old_id)?;
+        tx.execute("DELETE FROM archive WHERE session_id = ?1", params![old_id])?;
+    }
+    Ok(())
+}
+
 /// Bring the index up to date with what is on disk. Files whose (mtime, size)
 /// changed since the last run are re-parsed; archived rows whose source has
 /// returned unchanged are made live again without re-reading the transcript.
@@ -1459,6 +1502,10 @@ fn index_one(
     size: i64,
     output_mode: ToolOutputMode,
 ) -> Result<()> {
+    // A reader fix can respell a session's id - a web chat used to take its id
+    // from the export file it sat in - and everything the user added belongs to
+    // the conversation, not to the id, so it has to follow it across.
+    carry_identity_over(tx, key, &session.id)?;
     delete_session_msgs(tx, &session.id)?;
     delete_session_provenance(tx, &session.id)?;
     // A path that was archived (the tool deleted it, now it is back) is live
@@ -1894,29 +1941,6 @@ pub fn sync_with(
                 seen.push(key.clone());
             }
             restore_unchanged(conn, &restore)?;
-            // Reconcile deletions only when the whole store was read this run.
-            // If a backing db was present but unreadable (locked, half-written),
-            // `seen` is partial - pruning off it would archive the whole corpus
-            // on a transient hiccup, so skip reconciliation until a clean read.
-            if store.had_error {
-                // The discover path says this out loud; this one did not. It is
-                // the path aider takes, whose walk is capped at two seconds over
-                // the whole home - so on a large home the flag can be set every
-                // run, reconciliation never happens, and nothing says why a
-                // session the tool deleted is still listed.
-                eprintln!(
-                    "[{tool}] the store could not be read in full; \
-                     skipping deletion reconciliation this run"
-                );
-            } else {
-                archived_total += archive_or_prune(
-                    conn,
-                    tool,
-                    &seen,
-                    store_present,
-                    adapter.reconcile_scope().as_deref(),
-                )?;
-            }
 
             if !pending.is_empty() {
                 let token_of: HashMap<&str, i64> =
@@ -1943,6 +1967,33 @@ pub fn sync_with(
                     write_session(conn, &session, key, token, 0, output_mode)?;
                 }
                 report_indexed(tool, total, failed);
+            }
+
+            // Reconcile deletions only when the whole store was read this run.
+            // If a backing db was present but unreadable (locked, half-written),
+            // `seen` is partial - pruning off it would archive the whole corpus
+            // on a transient hiccup, so skip reconciliation until a clean read.
+            if store.had_error {
+                // The discover path says this out loud; this one did not. It is
+                // the path aider takes, whose walk is capped at two seconds over
+                // the whole home - so on a large home the flag can be set every
+                // run, reconciliation never happens, and nothing says why a
+                // session the tool deleted is still listed.
+                eprintln!(
+                    "[{tool}] the store could not be read in full; \
+                     skipping deletion reconciliation this run"
+                );
+            } else {
+                // After the new keys are written, so a conversation the store
+                // now lists at a different key is recognised as the same session
+                // rather than archived as a deleted one.
+                archived_total += archive_or_prune(
+                    conn,
+                    tool,
+                    &seen,
+                    store_present,
+                    adapter.reconcile_scope().as_deref(),
+                )?;
             }
             continue;
         }
@@ -2335,6 +2386,21 @@ fn archive_or_prune(
         .filter(|(p, _)| seen_set.contains(p.as_str()))
         .map(|(_, sid)| sid.clone())
         .collect();
+    // A web export keys its chats by file, so the store lists one conversation
+    // at the newest of the files that hold it. The other rows are not sessions
+    // that went away, and their marks belong to the id the chat answers to now.
+    let listed_by_native: std::collections::HashMap<String, String> = if tool.ends_with("-web") {
+        all_live
+            .iter()
+            .filter(|(p, _)| seen_set.contains(p.as_str()))
+            .filter_map(|(p, sid)| {
+                crate::adapters::web_chat::native_part_of_key(p)
+                    .map(|native| (native.to_string(), sid.clone()))
+            })
+            .collect()
+    } else {
+        std::collections::HashMap::new()
+    };
     let live: Vec<(String, String)> = all_live.into_iter().filter(|(p, _)| in_scope(p)).collect();
     let gone: Vec<(String, String)> = live
         .into_iter()
@@ -2364,8 +2430,40 @@ fn archive_or_prune(
 
     let mut archived = 0usize;
     for (path, sid) in gone {
+        let moved_to = crate::adapters::web_chat::native_part_of_key(&path)
+            .and_then(|native| listed_by_native.get(native))
+            .filter(|live_sid| **live_sid != sid)
+            .cloned();
         if still_live.contains(&sid) {
             conn.execute("DELETE FROM files WHERE path = ?1", params![path])?;
+        } else if let Some(current_sid) = moved_to {
+            // The chat was re-exported into a newer file: drop this listing and
+            // let the marks follow the conversation, rather than archiving a
+            // second copy of something the store still has.
+            conn.execute("DELETE FROM files WHERE path = ?1", params![path])?;
+            for table in ["tags", "notes", "summaries", "favorites", "snippets"] {
+                conn.execute(
+                    &format!("UPDATE OR IGNORE {table} SET session_id = ?2 WHERE session_id = ?1"),
+                    params![&sid, &current_sid],
+                )?;
+            }
+            // The superseded export is usually still on disk - the store just
+            // prefers the newer one - so its transcript waits with it: a newer
+            // export that fails to parse must not cost the conversation. Once
+            // that file is gone as well, these rows describe a session the index
+            // already keeps under another id.
+            let still_on_disk = crate::adapters::web_chat::file_part_of_key(&path)
+                .is_some_and(|file| std::path::Path::new(file).exists());
+            let listed_elsewhere: bool = conn.query_row(
+                "SELECT EXISTS(SELECT 1 FROM files WHERE session_id = ?1)",
+                params![&sid],
+                |r| r.get(0),
+            )?;
+            if !still_on_disk && !listed_elsewhere {
+                delete_session_msgs(conn, &sid)?;
+                delete_session_provenance(conn, &sid)?;
+                conn.execute("DELETE FROM archive WHERE session_id = ?1", params![&sid])?;
+            }
         } else if no_archive || !has_messages(conn, &sid)? {
             conn.execute("DELETE FROM files WHERE path = ?1", params![path])?;
             delete_session_msgs(conn, &sid)?;
@@ -5604,6 +5702,142 @@ mod edits_tests {
         assert!(
             edits_for(&c, "a.rs", 10).unwrap().is_empty(),
             "forget must remove the session's edits, not orphan them"
+        );
+    }
+
+    /// One web chat written the way a sync writes it: `key` is the export file
+    /// plus the chat's own id, `id` the session id the reader gives it.
+    fn index_web_chat(conn: &mut Connection, key: &str, id: &str, text: &str) {
+        use crate::model::{Message, Role, Session};
+        let session = Session {
+            id: id.to_string(),
+            tool: "claude-web",
+            path: PathBuf::from(key.replace('\u{1f}', "#")),
+            project: "web".into(),
+            started: None,
+            ended: None,
+            title: "a web chat".into(),
+            subagent: false,
+            parent_id: None,
+            messages: vec![Message::plain(Role::User, text, None)],
+            touched: vec!["src/upload_spec.rs".into()],
+            edits: vec![],
+        };
+        let tx = conn.transaction().unwrap();
+        index_one(&tx, &session, key, 5, 0, ToolOutputMode::Full).unwrap();
+        tx.commit().unwrap();
+    }
+
+    fn marked(c: &Connection, table: &str, session_id: &str) -> i64 {
+        c.query_row(
+            &format!("SELECT COUNT(*) FROM {table} WHERE session_id = ?1"),
+            params![session_id],
+            |r| r.get(0),
+        )
+        .unwrap()
+    }
+
+    fn mark(c: &Connection, table: &str, session_id: &str) {
+        let sql = match table {
+            "favorites" => "INSERT INTO favorites(session_id, created_at) VALUES(?1,'2026-01-01T00:00:00+00:00')",
+            "tags" => "INSERT INTO tags(session_id, tag) VALUES(?1,'verified')",
+            "notes" => "INSERT INTO notes(session_id, note, updated) VALUES(?1,'keep','2026-01-01T00:00:00+00:00')",
+            "summaries" => "INSERT INTO summaries(session_id, summary, created, kind) VALUES(?1,'s','2026-01-01T00:00:00+00:00','llm')",
+            _ => "INSERT INTO snippets(session_id, message_idx, title, content, created_at) VALUES(?1,0,'fix','cargo sync','2026-01-01T00:00:00+00:00')",
+        };
+        c.execute(sql, params![session_id]).unwrap();
+    }
+
+    #[test]
+    fn a_reparsed_id_takes_the_users_marks_with_it() {
+        let mut c = Connection::open_in_memory().unwrap();
+        create_cache_schema(&c).unwrap();
+        let key = "C:\\exports\\claude.json\u{1f}chat-1".to_string();
+        index_web_chat(&mut c, &key, "old-id", "read by the old reader");
+        for table in ["favorites", "tags", "notes", "summaries", "snippets"] {
+            mark(&c, table, "old-id");
+        }
+
+        // The reader fix that respells the id: same key, new session id.
+        index_web_chat(&mut c, &key, "new-id", "read again");
+
+        let listed: String = c
+            .query_row(
+                "SELECT session_id FROM files WHERE path = ?1",
+                [key.as_str()],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(listed, "new-id");
+        for table in ["favorites", "tags", "notes", "summaries", "snippets"] {
+            assert_eq!(
+                marked(&c, table, "new-id"),
+                1,
+                "the {table} followed the chat"
+            );
+            assert_eq!(
+                marked(&c, table, "old-id"),
+                0,
+                "no mark stays on the old id"
+            );
+        }
+        assert_eq!(
+            marked(&c, "messages", "old-id"),
+            0,
+            "the transcript the old id held is re-read under the new one, not left behind"
+        );
+        assert_eq!(marked(&c, "touched", "old-id"), 0);
+        assert_eq!(marked(&c, "messages", "new-id"), 1);
+    }
+
+    #[test]
+    fn a_re_exported_chat_is_not_treated_as_a_deleted_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let older = dir.path().join("claude-2026-03.json");
+        let newer = dir.path().join("claude-2026-06.json");
+        std::fs::write(&older, b"[]").unwrap();
+        std::fs::write(&newer, b"[]").unwrap();
+        // A third export of the same chat whose file the user has since deleted.
+        let deleted = format!(
+            "{}\u{1f}chat-1",
+            dir.path().join("claude-2026-01.json").display()
+        );
+
+        let mut c = Connection::open_in_memory().unwrap();
+        create_cache_schema(&c).unwrap();
+        let old_key = format!("{}\u{1f}chat-1", older.display());
+        let new_key = format!("{}\u{1f}chat-1", newer.display());
+        index_web_chat(&mut c, &old_key, "kept-id", "the first export");
+        index_web_chat(&mut c, &deleted, "dropped-id", "an export since removed");
+        index_web_chat(&mut c, &new_key, "new-id", "the newest export");
+        mark(&c, "favorites", "kept-id");
+
+        // The store lists this chat at the newest export only, so the other two
+        // keys are gone while the conversation itself is anything but.
+        let archived =
+            archive_or_prune(&c, "claude-web", std::slice::from_ref(&new_key), true, None).unwrap();
+        assert_eq!(
+            archived, 0,
+            "a second listing of a live chat is not archived as a deleted session"
+        );
+        let rows: i64 = c
+            .query_row("SELECT COUNT(*) FROM files", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(rows, 1, "only the newest export lists the chat");
+        assert_eq!(
+            marked(&c, "favorites", "new-id"),
+            1,
+            "the star follows the conversation to the id it answers to now"
+        );
+        assert_eq!(
+            marked(&c, "messages", "kept-id"),
+            1,
+            "its export file is still on disk, so that copy of the transcript waits with it"
+        );
+        assert_eq!(
+            marked(&c, "messages", "dropped-id"),
+            0,
+            "with the file deleted too, the rows are a leftover, not a record"
         );
     }
 
