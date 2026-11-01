@@ -207,6 +207,10 @@ progress on the `fix/review-1.3` branch; this section grows as each phase lands.
   had grown past the limit was a push that finally failed.
 
 ### Added
+- **ChatGPT exports (`gpt-web`)**: reads `conversations*.json` from a data export and
+  any file filed under a `gpt` folder in `web_session`. Follows the branch the chat
+  ended on, keeps thinking blocks, and leaves out citation markup, "Thought for N s"
+  recaps and hidden context.
 - **`wikiagents hook install-git`** puts a two-line `prepare-commit-msg` hook in
   a repository, and **`wikiagents hook prepare-commit-msg <file> [source]`**
   appends `AI-Session: <session id>` to the message — from

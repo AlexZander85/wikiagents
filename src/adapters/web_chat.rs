@@ -189,6 +189,32 @@ fn parse_timestamp_ms(v: &Value) -> Option<i64> {
     }
 }
 
+/// An epoch time in seconds or milliseconds, as a number or a numeric string
+/// (ChatGPT writes fractional seconds), or an RFC 3339 string.
+fn parse_epoch_millis(v: &Value) -> Option<i64> {
+    let num = match v.as_str() {
+        Some(s) => match s.parse::<f64>() {
+            Ok(num) => num,
+            Err(_) => return parse_rfc3339_utc(s).map(|dt| dt.timestamp_millis()),
+        },
+        // Whole numbers come through here too: `as_f64` accepts them.
+        None => v.as_f64()?,
+    };
+    if !num.is_finite() {
+        return None;
+    }
+    let millis = if num.abs() > 100_000_000_000.0 {
+        num
+    } else {
+        num * 1000.0
+    };
+    Some(millis.round() as i64)
+}
+
+fn parse_epoch(v: &Value) -> Option<DateTime<Utc>> {
+    parse_epoch_millis(v).and_then(DateTime::<Utc>::from_timestamp_millis)
+}
+
 pub fn web_session_roots() -> Vec<PathBuf> {
     let mut roots = Vec::new();
     if let Some(env_dir) = std::env::var_os("WIKIAGENTS_WEB_SESSION_DIR")
@@ -253,6 +279,7 @@ fn native_id_of_item(item: &Value) -> Option<&str> {
     item.get("uuid")
         .and_then(Value::as_str)
         .or_else(|| item.get("id").and_then(Value::as_str))
+        .or_else(|| item.get("conversation_id").and_then(Value::as_str))
 }
 
 /// The array of chats a vendor puts at the top of the file.
@@ -353,6 +380,14 @@ impl JsonCache {
     }
 }
 
+/// Whether a vendor's name appears in the part of the path below the export
+/// root: `web_session/gpt/...` is filed under GPT, while a root that happens to
+/// sit in `D:\tools\gpt-tools` or `~/.claude` says nothing about its files.
+fn filed_under(root: &Path, path: &Path, vendor_kw: &str) -> bool {
+    path.strip_prefix(root)
+        .is_ok_and(|rel| rel.to_string_lossy().to_lowercase().contains(vendor_kw))
+}
+
 fn discover_vendor_files(vendor_kw: &str) -> (Vec<PathBuf>, bool) {
     let mut files = Vec::new();
     let mut had_error = false;
@@ -368,11 +403,7 @@ fn discover_vendor_files(vendor_kw: &str) -> (Vec<PathBuf>, bool) {
             if path.extension().and_then(|s| s.to_str()) != Some("json") {
                 continue;
             }
-            let name_lower = path
-                .file_name()
-                .map(|s| s.to_string_lossy().to_lowercase())
-                .unwrap_or_default();
-            if name_lower.contains(vendor_kw) {
+            if filed_under(&root, &path, vendor_kw) {
                 files.push(path);
             }
         }
@@ -1249,6 +1280,392 @@ fn parse_glm_item(path: &Path, id: &str, item: &Value) -> Result<Session> {
     })
 }
 
+// =============================================================================
+// 6. GPT Web Adapter (ChatGPT data export)
+// =============================================================================
+
+fn is_gpt_file(root: &Path, path: &Path) -> bool {
+    let name = path
+        .file_name()
+        .map(|s| s.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
+    if !name.ends_with(".json") {
+        return false;
+    }
+    // Exclude known non-conversation export artifacts
+    if matches!(
+        name.as_str(),
+        "ads.json"
+            | "codex.json"
+            | "conversation_asset_file_names.json"
+            | "export_manifest.json"
+            | "library_files.json"
+            | "sectioned_conversations.json"
+            | "user_settings.json"
+            | "user.json"
+            | "message_feedback.json"
+            | "shared_conversations.json"
+    ) {
+        return false;
+    }
+    const OTHER_VENDORS: [&str; 5] = ["claude", "deepseek", "gemini", "qwen", "glm"];
+    for v in OTHER_VENDORS {
+        if name.contains(v) {
+            return false;
+        }
+    }
+    // A bare `conversations.json` may be Claude's too; `gpt_top_level_items`
+    // tells them apart by what is inside.
+    name.starts_with("conversations") || filed_under(root, path, "gpt")
+}
+
+fn discover_gpt_files() -> (Vec<PathBuf>, bool) {
+    let mut files = Vec::new();
+    let mut had_error = false;
+    for root in web_session_roots() {
+        for entry in WalkDir::new(&root)
+            .into_iter()
+            .filter_map(|e| ok_or_flag(e, &mut had_error))
+        {
+            if !entry.file_type().is_file() {
+                continue;
+            }
+            let path = entry.into_path();
+            if is_gpt_file(&root, &path) {
+                files.push(path);
+            }
+        }
+    }
+    (files, had_error)
+}
+
+fn gpt_top_level_items(json: &Value) -> Option<&Vec<Value>> {
+    let arr = json.as_array()?;
+    // The message tree is what makes a chat. Other files of the export carry a
+    // `conversation_id` as well, and each of them would become an empty session.
+    match arr.first() {
+        Some(first) if !first.get("mapping").is_some_and(Value::is_object) => None,
+        _ => Some(arr),
+    }
+}
+
+/// The answer as the reader saw it. ChatGPT keeps citations and widgets inline
+/// as `\u{e200}kind\u{e202}payload\u{e201}` in private-use characters, and wraps
+/// cited spans in more of them. Left in, they end up in search results.
+fn strip_gpt_markup(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(start) = rest.find('\u{e200}') {
+        out.push_str(&rest[..start]);
+        let inner = &rest[start + '\u{e200}'.len_utf8()..];
+        let Some(end) = inner.find('\u{e201}') else {
+            rest = inner;
+            continue;
+        };
+        out.push_str(&gpt_markup_visible_text(&inner[..end]));
+        rest = &inner[end + '\u{e201}'.len_utf8()..];
+    }
+    out.push_str(rest);
+    out.retain(|c| !('\u{e000}'..='\u{f8ff}').contains(&c));
+    out
+}
+
+/// What a marker shows in the sentence around it. Most show nothing of their
+/// own (a citation, an image strip), but dropping a named entity or a link
+/// would leave a hole in the sentence.
+fn gpt_markup_visible_text(marker: &str) -> String {
+    let mut fields = marker.split('\u{e202}');
+    let kind = fields.next().unwrap_or("");
+    let payload = fields.next().unwrap_or("");
+    match kind {
+        "url" | "link_title" => payload.to_string(),
+        // `["type", "name", ...]`
+        "entity" | "product_entity" => serde_json::from_str::<Value>(payload)
+            .ok()
+            .and_then(|v| v.get(1).and_then(Value::as_str).map(str::to_string))
+            .unwrap_or_default(),
+        _ => String::new(),
+    }
+}
+
+#[derive(Default)]
+pub struct GptWeb {
+    cache: JsonCache,
+}
+
+impl GptWeb {
+    fn token(item: &Value, mtime: i64) -> i64 {
+        item.get("update_time")
+            .or_else(|| item.get("create_time"))
+            .and_then(parse_epoch_millis)
+            .unwrap_or(mtime)
+    }
+}
+
+impl Adapter for GptWeb {
+    fn name(&self) -> &'static str {
+        "gpt-web"
+    }
+
+    fn root(&self) -> Option<PathBuf> {
+        web_session_roots().into_iter().next()
+    }
+
+    fn discover(&self) -> Discovered {
+        Vec::new().into()
+    }
+
+    fn parse(&self, path: &Path) -> Result<Session> {
+        let json = self.cache.get_or_load(path)?;
+        if let Some(arr) = gpt_top_level_items(&json) {
+            if let Some(first) = arr.first() {
+                let id = native_id_of_item(first).unwrap_or("0");
+                return parse_gpt_item(path, id, first);
+            }
+        }
+        anyhow::bail!("empty or invalid gpt web export {}", path.display())
+    }
+
+    fn store(&self) -> Option<Store> {
+        let (files, fs_error) = discover_gpt_files();
+        let (keys, read_error) = scan_store(&self.cache, &files, gpt_top_level_items, Self::token);
+        Some(Store {
+            keys: keys.finish(),
+            files,
+            had_error: fs_error || read_error,
+        })
+    }
+
+    fn parse_key(&self, key: &str) -> Result<Session> {
+        let (file_str, id) = key.split_once(KEY_SEP).context("malformed gpt-web key")?;
+        let path = Path::new(file_str);
+        let (json, at) = self.cache.locate(path, id, gpt_top_level_items)?;
+        let item = item_at(&json, at, gpt_top_level_items)
+            .context("gpt web export changed while it was read")?;
+        parse_gpt_item(path, id, item)
+    }
+}
+
+fn parse_gpt_item(path: &Path, id: &str, item: &Value) -> Result<Session> {
+    let key = make_key(path, id);
+    let title = item
+        .get("title")
+        .and_then(Value::as_str)
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty() && !s.eq_ignore_ascii_case("new chat"))
+        .map(|s| s.to_string());
+
+    let started = item.get("create_time").and_then(parse_epoch);
+    let ended = item.get("update_time").and_then(parse_epoch).or(started);
+
+    let mut messages: Vec<Message> = Vec::new();
+    let mut touched: Vec<String> = Vec::new();
+
+    if let Some(mapping) = item.get("mapping").and_then(Value::as_object) {
+        let mut ordered_node_ids = Vec::new();
+        let mut visited = HashSet::new();
+        let mut curr = item
+            .get("current_node")
+            .and_then(Value::as_str)
+            .map(|s| s.to_string());
+
+        while let Some(cid) = curr {
+            let Some(node) = mapping.get(&cid) else {
+                break;
+            };
+            if !visited.insert(cid.clone()) {
+                break;
+            }
+            curr = node
+                .get("parent")
+                .and_then(Value::as_str)
+                .map(|s| s.to_string());
+            ordered_node_ids.push(cid);
+        }
+        ordered_node_ids.reverse();
+
+        // Fallback: if traversal from current_node yielded nothing, sort all nodes by create_time
+        if ordered_node_ids.is_empty() {
+            let mut timed_nodes: Vec<(f64, String)> = Vec::new();
+            for (nid, node) in mapping {
+                let t = node
+                    .get("message")
+                    .and_then(|m| m.get("create_time"))
+                    .and_then(Value::as_f64)
+                    .unwrap_or(0.0);
+                timed_nodes.push((t, nid.clone()));
+            }
+            timed_nodes.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+            ordered_node_ids = timed_nodes.into_iter().map(|(_, nid)| nid).collect();
+        }
+
+        for nid in ordered_node_ids {
+            let Some(node) = mapping.get(&nid) else {
+                continue;
+            };
+            let Some(msg) = node.get("message").filter(|m| m.is_object()) else {
+                continue;
+            };
+
+            let author_role = msg
+                .get("author")
+                .and_then(|a| a.get("role"))
+                .and_then(Value::as_str)
+                .unwrap_or("");
+
+            let role = match author_role {
+                "user" => Role::User,
+                "assistant" => Role::Assistant,
+                "tool" => Role::Tool,
+                "system" => continue, // skip system prompts
+                _ => continue,
+            };
+
+            // Custom instructions and other context the chat never showed.
+            let hidden = msg
+                .get("metadata")
+                .and_then(|m| m.get("is_visually_hidden_from_conversation"))
+                .and_then(Value::as_bool)
+                == Some(true);
+            if hidden {
+                continue;
+            }
+
+            let ts = msg.get("create_time").and_then(parse_epoch).or(started);
+
+            // Reasoning blocks from reasoning_of (if present in metadata or message fields)
+            if let Some(reasoning) = reasoning_of(msg) {
+                messages.push(Message::plain(Role::Assistant, reasoning, ts));
+            }
+
+            let Some(content) = msg.get("content").and_then(Value::as_object) else {
+                continue;
+            };
+            let content_type = content
+                .get("content_type")
+                .and_then(Value::as_str)
+                .unwrap_or("");
+
+            match content_type {
+                "thoughts" => {
+                    if let Some(thoughts_arr) = content.get("thoughts").and_then(Value::as_array) {
+                        let mut thoughts_text = Vec::new();
+                        for th in thoughts_arr {
+                            if let Some(c) = th.get("content").and_then(Value::as_str) {
+                                let trimmed = c.trim();
+                                if !trimmed.is_empty() {
+                                    thoughts_text.push(trimmed);
+                                }
+                            }
+                        }
+                        if !thoughts_text.is_empty() {
+                            messages.push(Message::plain(
+                                Role::Assistant,
+                                thoughts_text.join("\n\n"),
+                                ts,
+                            ));
+                        }
+                    }
+                }
+                // Only "Thought for 12 s": the thinking itself is in `thoughts`.
+                "reasoning_recap" => {}
+                "code" => {
+                    if let Some(t) = content.get("text").and_then(Value::as_str) {
+                        let language = content
+                            .get("language")
+                            .and_then(Value::as_str)
+                            .filter(|l| *l != "unknown")
+                            .unwrap_or("");
+                        let code_formatted = format!("```{language}\n{}\n```", t.trim());
+                        extract_code_block_paths(&code_formatted, &mut touched);
+                        messages.push(Message::plain(Role::Tool, code_formatted, ts));
+                    }
+                }
+                "execution_output" => {
+                    if let Some(t) = content.get("text").and_then(Value::as_str) {
+                        let out_formatted = format!("```\n{}\n```", t.trim());
+                        messages.push(Message::plain(Role::Tool, out_formatted, ts));
+                    }
+                }
+                _ => {
+                    let mut text_parts = Vec::new();
+                    if let Some(parts) = content.get("parts").and_then(Value::as_array) {
+                        for part in parts {
+                            if let Some(s) = part.as_str() {
+                                let trimmed = s.trim();
+                                if !trimmed.is_empty() {
+                                    text_parts.push(trimmed.to_string());
+                                }
+                            } else if let Some(obj) = part.as_object() {
+                                let p_type = obj
+                                    .get("content_type")
+                                    .and_then(Value::as_str)
+                                    .unwrap_or("");
+                                if p_type == "audio_transcription" {
+                                    if let Some(t) = obj.get("text").and_then(Value::as_str) {
+                                        let trimmed = t.trim();
+                                        if !trimmed.is_empty() {
+                                            text_parts.push(trimmed.to_string());
+                                        }
+                                    }
+                                } else if p_type == "image_asset_pointer" {
+                                    text_parts.push("[image]".to_string());
+                                } else if p_type == "real_time_user_audio_video_asset_pointer" {
+                                    if let Some(t) = obj
+                                        .get("audio_asset_pointer")
+                                        .and_then(|a| a.get("metadata"))
+                                        .and_then(|m| m.get("transcription"))
+                                        .and_then(Value::as_str)
+                                    {
+                                        let trimmed = t.trim();
+                                        if !trimmed.is_empty() {
+                                            text_parts.push(trimmed.to_string());
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if text_parts.is_empty() {
+                        if let Some(t) = content.get("text").and_then(Value::as_str) {
+                            let trimmed = t.trim();
+                            if !trimmed.is_empty() {
+                                text_parts.push(trimmed.to_string());
+                            }
+                        }
+                    }
+                    let mut text = text_parts.join("\n\n");
+                    if role == Role::Assistant {
+                        text = strip_gpt_markup(&text).trim().to_string();
+                    }
+                    if !text.is_empty() {
+                        extract_code_block_paths(&text, &mut touched);
+                        messages.push(Message::plain(role, text, ts));
+                    }
+                }
+            }
+        }
+    }
+
+    let touched = dedup_paths(touched);
+    let final_title = title.unwrap_or_else(|| title_from_messages(&messages));
+
+    Ok(Session {
+        id: web_session_id("gpt-web", id),
+        tool: "gpt-web",
+        path: PathBuf::from(display_path(&key)),
+        project: "web".to_string(),
+        started,
+        ended,
+        title: final_title,
+        subagent: false,
+        parent_id: None,
+        messages,
+        touched,
+        edits: Vec::new(),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1541,6 +1958,117 @@ mod tests {
             None,
             "blank reasoning is not a turn"
         );
+    }
+
+    #[test]
+    fn gpt_chats_walk_mapping_extract_thoughts_and_multimodal() {
+        let adapter = GptWeb::default();
+        let first = parse("gpt", &adapter, "33333333-aaaa-4bbb-8ccc-000000000001");
+        assert_eq!(first.tool, "gpt-web");
+        assert_eq!(first.title, "Optimize PostgreSQL Queries");
+        assert_eq!(
+            roles(&first),
+            vec![Role::User, Role::Assistant, Role::Assistant]
+        );
+        assert!(
+            body(&first, "indexes and analyzing query plans").is_some(),
+            "the thoughts block was extracted as assistant turn"
+        );
+        assert_eq!(first.touched, vec!["src/db/queries.rs".to_string()]);
+
+        let second = parse("gpt", &adapter, "33333333-aaaa-4bbb-8ccc-000000000002");
+        assert!(second.title.starts_with("What is this image?"));
+        assert_eq!(roles(&second), vec![Role::User, Role::Assistant]);
+        assert!(
+            body(&second, "[image]").is_some(),
+            "the image asset pointer was rendered with placeholder"
+        );
+    }
+
+    fn gpt_chat(native: &str) -> Session {
+        parse(
+            "gpt",
+            &GptWeb::default(),
+            &format!("33333333-aaaa-4bbb-8ccc-00000000000{native}"),
+        )
+    }
+
+    #[test]
+    fn gpt_reads_the_current_branch_and_the_real_code_language() {
+        let chat = gpt_chat("3");
+        assert!(body(&chat, "ABANDONED").is_none(), "an edited-away branch");
+        assert!(body(&chat, "```rust\nfn main() {}\n```").is_some());
+        assert!(body(&chat, "```\nraw\n```").is_some(), "language unknown");
+        assert!(
+            body(&chat, "Thought for").is_none(),
+            "a recap is not an answer"
+        );
+    }
+
+    #[test]
+    fn gpt_current_node_outside_the_mapping_falls_back_to_every_node() {
+        assert!(body(&gpt_chat("4"), "still readable").is_some());
+    }
+
+    #[test]
+    fn gpt_times_read_whole_seconds_and_whole_milliseconds() {
+        let expected = DateTime::<Utc>::from_timestamp(1_740_000_000, 0);
+        assert_eq!(gpt_chat("5").started, expected);
+        assert_eq!(gpt_chat("6").started, expected);
+        assert_eq!(parse_epoch(&serde_json::json!("nan")), None);
+        assert_eq!(
+            parse_epoch_millis(&serde_json::json!(1_740_000_000.5)),
+            Some(1_740_000_000_500)
+        );
+    }
+
+    #[test]
+    fn gpt_skips_context_the_chat_never_showed() {
+        let chat = gpt_chat("7");
+        assert!(body(&chat, "HIDDEN CONTEXT").is_none());
+        assert_eq!(roles(&chat), vec![Role::User]);
+    }
+
+    #[test]
+    fn gpt_markup_leaves_the_sentence_and_nothing_else() {
+        assert_eq!(
+            strip_gpt_markup(
+                "\u{e203}Fact\u{e204}\u{e200}cite\u{e202}turn0search0\u{e201}\u{e206} by \
+                 \u{e200}entity\u{e202}[\"org\",\"Acme\",\"a firm\"]\u{e201}, see \
+                 \u{e200}url\u{e202}the docs\u{e202}https://x.test\u{e201}.\
+                 \u{e200}image_group\u{e202}{\"query\":[\"a\"]}\u{e201}"
+            ),
+            "Fact by Acme, see the docs."
+        );
+        assert_eq!(strip_gpt_markup("cut \u{e200}cite"), "cut cite");
+    }
+
+    #[test]
+    fn gpt_picker_wants_a_message_tree() {
+        let tree = serde_json::json!([{ "id": "a", "mapping": {} }]);
+        assert!(gpt_top_level_items(&tree).is_some());
+        let feedback = serde_json::json!([{ "id": "a", "conversation_id": "a" }]);
+        assert!(gpt_top_level_items(&feedback).is_none());
+        let claude = serde_json::json!([{ "uuid": "a", "chat_messages": [] }]);
+        assert!(gpt_top_level_items(&claude).is_none());
+    }
+
+    #[test]
+    fn a_vendor_is_recognised_below_the_root_only() {
+        let root = Path::new("/tools/gpt-claude/web_session");
+        assert!(filed_under(root, &root.join("claude/a.json"), "claude"));
+        assert!(filed_under(
+            root,
+            &root.join("Claude_export.json"),
+            "claude"
+        ));
+        assert!(!filed_under(root, &root.join("a.json"), "claude"));
+
+        assert!(is_gpt_file(root, &root.join("gpt/export.json")));
+        assert!(is_gpt_file(root, &root.join("conversations-000.json")));
+        assert!(!is_gpt_file(root, &root.join("notes.json")));
+        assert!(!is_gpt_file(root, &root.join("gpt/user.json")));
+        assert!(!is_gpt_file(root, &root.join("conversations_claude.json")));
     }
 
     #[test]

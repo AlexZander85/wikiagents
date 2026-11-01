@@ -30,7 +30,7 @@ pub use hermes::Hermes;
 pub use kimi::Kimi;
 pub use prodex::thread_url_for_task as prodex_thread_url;
 pub use qoder::Qoder;
-pub use web_chat::{ClaudeWeb, DeepSeekWeb, GeminiWeb, GlmWeb, QwenWeb};
+pub use web_chat::{ClaudeWeb, DeepSeekWeb, GeminiWeb, GlmWeb, GptWeb, QwenWeb};
 pub use zcode::ZCode;
 
 use crate::model::{Session, StoreReport};
@@ -188,6 +188,7 @@ pub fn all() -> Vec<Box<dyn Adapter>> {
         Box::new(web_chat::GeminiWeb::default()),
         Box::new(web_chat::QwenWeb::default()),
         Box::new(web_chat::GlmWeb::default()),
+        Box::new(web_chat::GptWeb::default()),
     ];
 
     if let Some(home) = crate::util::home_dir() {
@@ -217,6 +218,8 @@ pub fn by_name(name: &str) -> Option<Box<dyn Adapter>> {
         "gemini-web" | "geminiweb" => "gemini-web",
         "qwen-web" | "qwenweb" => "qwen-web",
         "glm-web" | "glmweb" | "glm" => "glm-web",
+        "gpt-web" | "gptweb" | "gpt_web" | "chatgpt-web" | "chatgptweb" | "chatgpt_web"
+        | "chatgpt" | "gpt" => "gpt-web",
         other => other,
     };
     all().into_iter().find(|a| a.name() == canonical)
@@ -253,6 +256,9 @@ const READER_OVERRIDES: &[(&str, i64)] = &[
     ("gemini-web", 4),
     ("qwen-web", 4),
     ("glm-web", 4),
+    // 5: gpt-web drops citation markup, recaps and hidden context, and reads
+    // whole-number times; chats indexed before that need reading again.
+    ("gpt-web", 5),
 ];
 
 /// The tools whose parser version is deliberately not the global one, so a test

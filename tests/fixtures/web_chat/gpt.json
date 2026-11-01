@@ -1,0 +1,333 @@
+[
+  {
+    "id": "33333333-aaaa-4bbb-8ccc-000000000001",
+    "title": "Optimize PostgreSQL Queries",
+    "create_time": 1740000000.0,
+    "update_time": 1740001200.0,
+    "current_node": "n3",
+    "mapping": {
+      "root": {
+        "id": "root",
+        "parent": null,
+        "message": null
+      },
+      "n1": {
+        "id": "n1",
+        "parent": "root",
+        "message": {
+          "author": {
+            "role": "user"
+          },
+          "create_time": 1740000000.0,
+          "content": {
+            "content_type": "text",
+            "parts": [
+              "How to speed up slow queries on `src/db/queries.rs`?"
+            ]
+          }
+        }
+      },
+      "n2": {
+        "id": "n2",
+        "parent": "n1",
+        "message": {
+          "author": {
+            "role": "assistant"
+          },
+          "create_time": 1740000050.0,
+          "content": {
+            "content_type": "thoughts",
+            "thoughts": [
+              {
+                "content": "Consider adding indexes and analyzing query plans."
+              }
+            ]
+          }
+        }
+      },
+      "n3": {
+        "id": "n3",
+        "parent": "n2",
+        "message": {
+          "author": {
+            "role": "assistant"
+          },
+          "create_time": 1740000100.0,
+          "content": {
+            "content_type": "text",
+            "parts": [
+              "# src/db/queries.rs\nUse EXPLAIN ANALYZE on queries to identify sequential scans."
+            ]
+          }
+        }
+      }
+    }
+  },
+  {
+    "id": "33333333-aaaa-4bbb-8ccc-000000000002",
+    "title": "",
+    "create_time": 1740002000.0,
+    "update_time": 1740002500.0,
+    "current_node": "m2",
+    "mapping": {
+      "m1": {
+        "id": "m1",
+        "parent": null,
+        "message": {
+          "author": {
+            "role": "user"
+          },
+          "create_time": 1740002000.0,
+          "content": {
+            "content_type": "multimodal_text",
+            "parts": [
+              {
+                "content_type": "audio_transcription",
+                "text": "What is this image?"
+              },
+              {
+                "content_type": "image_asset_pointer"
+              }
+            ]
+          }
+        }
+      },
+      "m2": {
+        "id": "m2",
+        "parent": "m1",
+        "message": {
+          "author": {
+            "role": "assistant"
+          },
+          "create_time": 1740002100.0,
+          "content": {
+            "content_type": "text",
+            "parts": [
+              "This is an architecture diagram."
+            ]
+          }
+        }
+      }
+    }
+  },
+  {
+    "id": "33333333-aaaa-4bbb-8ccc-000000000003",
+    "title": "Edited branch",
+    "create_time": 1740000000.0,
+    "update_time": 1740000000.0,
+    "current_node": "b5",
+    "mapping": {
+      "b1": {
+        "id": "b1",
+        "parent": null,
+        "message": {
+          "author": {
+            "role": "user"
+          },
+          "create_time": 1740000000.0,
+          "content": {
+            "content_type": "text",
+            "parts": [
+              "Run it"
+            ]
+          }
+        }
+      },
+      "b0": {
+        "id": "b0",
+        "parent": "b1",
+        "message": {
+          "author": {
+            "role": "assistant"
+          },
+          "create_time": 1740000000.0,
+          "content": {
+            "content_type": "text",
+            "parts": [
+              "ABANDONED answer"
+            ]
+          }
+        }
+      },
+      "b2": {
+        "id": "b2",
+        "parent": "b1",
+        "message": {
+          "author": {
+            "role": "assistant"
+          },
+          "create_time": 1740000000.0,
+          "content": {
+            "content_type": "code",
+            "text": "fn main() {}",
+            "language": "rust"
+          }
+        }
+      },
+      "b3": {
+        "id": "b3",
+        "parent": "b2",
+        "message": {
+          "author": {
+            "role": "assistant"
+          },
+          "create_time": 1740000000.0,
+          "content": {
+            "content_type": "code",
+            "text": "raw",
+            "language": "unknown"
+          }
+        }
+      },
+      "b4": {
+        "id": "b4",
+        "parent": "b3",
+        "message": {
+          "author": {
+            "role": "assistant"
+          },
+          "create_time": 1740000000.0,
+          "content": {
+            "content_type": "reasoning_recap",
+            "content": "Thought for 12 s"
+          }
+        }
+      },
+      "b5": {
+        "id": "b5",
+        "parent": "b4",
+        "message": {
+          "author": {
+            "role": "assistant"
+          },
+          "create_time": 1740000000.0,
+          "content": {
+            "content_type": "text",
+            "parts": [
+              "Done"
+            ]
+          }
+        }
+      }
+    }
+  },
+  {
+    "id": "33333333-aaaa-4bbb-8ccc-000000000004",
+    "title": "Dangling current node",
+    "create_time": 1740000000.0,
+    "update_time": 1740000000.0,
+    "current_node": "gone",
+    "mapping": {
+      "d1": {
+        "id": "d1",
+        "parent": null,
+        "message": {
+          "author": {
+            "role": "user"
+          },
+          "create_time": 1740000000.0,
+          "content": {
+            "content_type": "text",
+            "parts": [
+              "still readable"
+            ]
+          }
+        }
+      }
+    }
+  },
+  {
+    "id": "33333333-aaaa-4bbb-8ccc-000000000005",
+    "title": "Whole seconds",
+    "create_time": 1740000000,
+    "update_time": 1740000000,
+    "current_node": "s1",
+    "mapping": {
+      "s1": {
+        "id": "s1",
+        "parent": null,
+        "message": {
+          "author": {
+            "role": "user"
+          },
+          "create_time": 1740000000,
+          "content": {
+            "content_type": "text",
+            "parts": [
+              "seconds"
+            ]
+          }
+        }
+      }
+    }
+  },
+  {
+    "id": "33333333-aaaa-4bbb-8ccc-000000000006",
+    "title": "Whole milliseconds",
+    "create_time": 1740000000000,
+    "update_time": 1740000000000,
+    "current_node": "m1",
+    "mapping": {
+      "m1": {
+        "id": "m1",
+        "parent": null,
+        "message": {
+          "author": {
+            "role": "user"
+          },
+          "create_time": 1740000000000,
+          "content": {
+            "content_type": "text",
+            "parts": [
+              "millis"
+            ]
+          }
+        }
+      }
+    }
+  },
+  {
+    "id": "33333333-aaaa-4bbb-8ccc-000000000007",
+    "title": "Hidden context",
+    "create_time": 1740000000.0,
+    "update_time": 1740000000.0,
+    "current_node": "h2",
+    "mapping": {
+      "h1": {
+        "id": "h1",
+        "parent": null,
+        "message": {
+          "author": {
+            "role": "user"
+          },
+          "create_time": 1740000000.0,
+          "content": {
+            "content_type": "text",
+            "parts": [
+              "HIDDEN CONTEXT"
+            ]
+          },
+          "metadata": {
+            "is_visually_hidden_from_conversation": true
+          }
+        }
+      },
+      "h2": {
+        "id": "h2",
+        "parent": "h1",
+        "message": {
+          "author": {
+            "role": "user"
+          },
+          "create_time": 1740000000.0,
+          "content": {
+            "content_type": "text",
+            "parts": [
+              "Visible"
+            ]
+          }
+        }
+      }
+    }
+  }
+]

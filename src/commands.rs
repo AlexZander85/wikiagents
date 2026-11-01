@@ -152,6 +152,7 @@ pub fn list(
     no_sync: bool,
 ) -> Result<()> {
     let mut conn = index::open()?;
+    let tool = tool.map(|t| adapters::by_name(t).map(|a| a.name()).unwrap_or(t));
     if !no_sync {
         index::sync(&mut conn, tool)?;
     }
@@ -513,6 +514,7 @@ pub fn search_with_options(query: &str, options: SearchOptions<'_>) -> Result<()
         no_sync,
         roles,
     } = options;
+    let tool = tool.map(|t| adapters::by_name(t).map(|a| a.name()).unwrap_or(t));
     let trimmed = query.trim();
     if trimmed.is_empty() {
         bail!("empty query");
@@ -741,6 +743,7 @@ pub fn recall(
 /// Build or refresh the index now, so later queries can pass `--no-sync`.
 pub fn sync_cmd(tool: Option<&str>) -> Result<()> {
     let mut conn = index::open()?;
+    let tool = tool.map(|t| adapters::by_name(t).map(|a| a.name()).unwrap_or(t));
     index::sync(&mut conn, tool)?;
     // Count top-level sessions only (not subagent transcripts or archived rows)
     // so the number matches what `stats` and `list` report.

@@ -395,7 +395,10 @@ fn api_stats(conn: &Connection) -> Result<Boxed> {
 }
 
 fn api_sessions(conn: &Connection, query: &str) -> Result<Boxed> {
-    let tool = param(query, "tool");
+    let tool_raw = param(query, "tool");
+    let tool = tool_raw
+        .as_deref()
+        .map(|t| crate::adapters::by_name(t).map(|a| a.name()).unwrap_or(t));
     let project = param(query, "project");
     let tag = param(query, "tag");
     let since = param(query, "since");
@@ -409,7 +412,7 @@ fn api_sessions(conn: &Connection, query: &str) -> Result<Boxed> {
         conn,
         limit,
         &index::ListQuery {
-            tool: tool.as_deref(),
+            tool,
             project: project.as_deref(),
             tag: tag.as_deref(),
             since: since.as_deref(),
@@ -458,7 +461,10 @@ fn api_search(conn: &Connection, query: &str) -> Result<Boxed> {
         return json_response(json!([]));
     }
 
-    let tool = param(query, "tool");
+    let tool_raw = param(query, "tool");
+    let tool = tool_raw
+        .as_deref()
+        .map(|t| crate::adapters::by_name(t).map(|a| a.name()).unwrap_or(t));
     let roles = match param(query, "roles") {
         Some(value) => {
             let parsed = value
@@ -498,8 +504,7 @@ fn api_search(conn: &Connection, query: &str) -> Result<Boxed> {
         if !qt.is_empty() {
             all_terms.push(qt);
         }
-        let rows =
-            index::search_sessions_multi_terms(conn, &all_terms, limit, tool.as_deref(), scope)?;
+        let rows = index::search_sessions_multi_terms(conn, &all_terms, limit, tool, scope)?;
         return json_response(json!(rows
             .iter()
             .map(|r| {
@@ -514,7 +519,7 @@ fn api_search(conn: &Connection, query: &str) -> Result<Boxed> {
 
     // Default search mode: strictly within one message (FTS5 rank & snippet)
     let project = param(query, "project");
-    let hits = index::search_scoped(conn, qt, limit, tool.as_deref(), project.as_deref(), scope)?;
+    let hits = index::search_scoped(conn, qt, limit, tool, project.as_deref(), scope)?;
     json_response(json!(hits
         .iter()
         .map(|h| {
@@ -1127,7 +1132,10 @@ fn api_snippets(conn: &Connection, query: &str) -> Result<Boxed> {
     let q = param(query, "q");
     let lang = param(query, "lang");
     let session_id = param(query, "session_id");
-    let tool = param(query, "tool");
+    let tool_raw = param(query, "tool");
+    let tool = tool_raw
+        .as_deref()
+        .map(|t| crate::adapters::by_name(t).map(|a| a.name()).unwrap_or(t));
     let role = param(query, "role");
     let limit = param(query, "limit")
         .and_then(|v| v.parse().ok())
@@ -1137,7 +1145,7 @@ fn api_snippets(conn: &Connection, query: &str) -> Result<Boxed> {
         q.as_deref(),
         lang.as_deref(),
         session_id.as_deref(),
-        tool.as_deref(),
+        tool,
         role.as_deref(),
         limit,
     )?;
