@@ -6797,14 +6797,6 @@ async function refresh() {
     items = items.filter((row) => !row.tool || !row.tool.endsWith("-web"));
   }
 
-  if (!showShort) {
-    items = items.filter((row) => {
-      if (favoriteSet.has(row.id) || (noteMap && noteMap.has(row.id))) return true;
-      const count = row.msg_count !== undefined ? row.msg_count : (row.messages ? row.messages.length : 0);
-      return count > 2;
-    });
-  }
-
   if (currentOnlyFavorites) {
     items = items.filter((row) => favoriteSet.has(row.id));
   }
