@@ -3466,8 +3466,8 @@
           <input type="checkbox" id="show-webchats-cb" checked style="margin: 0; cursor: pointer;">
           <span id="show-webchats-label">🌐 Web Chats</span>
         </label>
-        <label class="short-label" style="display: inline-flex; align-items: center; gap: 4px; font-size: 11px; color: var(--ink-2); cursor: pointer; user-select: none;" title="Показывать короткие сессии (1-2 сообщения или без ответа модели). Снимите, чтобы скрыть шум.">
-          <input type="checkbox" id="show-short-cb" checked style="margin: 0; cursor: pointer;">
+        <label class="short-label" style="display: inline-flex; align-items: center; gap: 4px; font-size: 11px; color: var(--ink-2); cursor: pointer; user-select: none;" title="Показывать короткие сессии (1-2 сообщения или без ответа модели). По умолчанию скрыты для чистоты выдачи.">
+          <input type="checkbox" id="show-short-cb" style="margin: 0; cursor: pointer;">
           <span id="show-short-label">💬 Short</span>
         </label>
         <label class="rewound-label" style="display: inline-flex; align-items: center; gap: 4px; font-size: 11px; color: var(--ink-2); cursor: pointer; user-select: none;">
@@ -6724,7 +6724,7 @@ async function refresh() {
   const subParam = $("show-subagents-cb") && $("show-subagents-cb").checked ? "&subagents=1" : "";
   const showWeb = $("show-webchats-cb") ? $("show-webchats-cb").checked : true;
   const webParam = !showWeb ? "&no_web=1" : "";
-  const showShort = $("show-short-cb") ? $("show-short-cb").checked : true;
+  const showShort = $("show-short-cb") ? $("show-short-cb").checked : false;
   const shortParam = !showShort ? "&no_short=1" : "";
   const tagParam = currentTag ? `&tag=${encodeURIComponent(currentTag)}` : "";
   let projParam = "";
@@ -6901,6 +6901,8 @@ if ($("show-short-cb")) {
   const savedShort = localStorage.getItem("wikiagents-show-short");
   if (savedShort !== null) {
     $("show-short-cb").checked = savedShort === "1" || savedShort === "true";
+  } else {
+    $("show-short-cb").checked = false;
   }
   $("show-short-cb").addEventListener("change", () => {
     localStorage.setItem("wikiagents-show-short", $("show-short-cb").checked ? "1" : "0");
