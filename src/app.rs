@@ -1,7 +1,6 @@
 use anyhow::Result;
-use std::net::TcpStream;
+use std::net::TcpListener;
 use std::thread;
-use std::time::Duration;
 use tao::{
     event::{Event, StartCause, WindowEvent},
     event_loop::{ControlFlow, EventLoop},
@@ -14,20 +13,22 @@ pub fn run(preferred_port: Option<u16>) -> Result<()> {
     let port = preferred_port.unwrap_or(7575);
     let addr = format!("127.0.0.1:{port}");
 
-    // Check if an AgentWiki server is already running on this port
-    let already_running = TcpStream::connect(&addr).is_ok();
-    if !already_running {
-        thread::spawn(move || {
-            let _ = crate::web::serve(port, true, false);
-        });
-
-        // Wait up to 3 seconds for the server to accept connections
-        for _ in 0..60 {
-            thread::sleep(Duration::from_millis(50));
-            if TcpStream::connect(&addr).is_ok() {
-                break;
-            }
+    // Bind first, open the index later. Binding is instant either way: it
+    // succeeds, and the WebView's first request waits in the accept queue
+    // while the server thread opens the index; or the port is taken, which
+    // means another AgentWiki already serves it. Probing with a connect
+    // instead cost two seconds on Windows, which retries a refused loopback
+    // connection before giving up - on every cold start.
+    match TcpListener::bind(&addr) {
+        Ok(listener) => {
+            thread::spawn(move || {
+                if let Err(e) = crate::web::serve_listener(listener) {
+                    eprintln!("web: {e:#}");
+                }
+            });
         }
+        Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {}
+        Err(e) => return Err(e.into()),
     }
 
     let event_loop = EventLoop::new();
@@ -48,8 +49,8 @@ pub fn run(preferred_port: Option<u16>) -> Result<()> {
     // External links (window.open from the UI, e.g. "Search in Google") are
     // handed to the system browser from THIS process. Doing it via the HTTP
     // server is unreliable: the app may be attached to a server some other
-    // process started (see `already_running`), which may not be allowed to
-    // launch a browser at all.
+    // process started (the bind above found the port taken), which may not be
+    // allowed to launch a browser at all.
     let _webview = WebViewBuilder::new()
         .with_url(&url)
         .with_new_window_req_handler(|target, _features| {

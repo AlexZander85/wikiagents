@@ -17,6 +17,10 @@ progress on the `fix/review-1.3` branch; this section grows as each phase lands.
   `/api/snippet/save|delete|rename` answer 405 to any other method.
 
 ### Fixed
+- **The desktop window opens without the two-second wait**: the app probed its port
+  with a connect, and Windows retries a refused loopback connection for about 2 s.
+  It now binds the port first and opens the index behind it, so the window no longer
+  waits for the server.
 - **The CLI stopped overflowing its own stack**: Windows gives the main thread
   1 MB, and the debug frame of `main` — clap's parser plus the locals of every
   argument variant, all in one function — runs past it. A single new subcommand

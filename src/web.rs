@@ -29,7 +29,21 @@ pub fn serve(port: u16, no_open: bool, sync: bool) -> Result<()> {
     } else if wsl && !no_open {
         println!("(WSL detected - open the URL above in your browser; auto-open is off here to avoid stray windows)");
     }
+    run_server(server, conn, port)
+}
 
+/// Serve on a socket the caller already bound - the desktop app binds before
+/// it opens its window, so the WebView's first request simply waits in the
+/// accept queue while the index opens here instead of the window waiting.
+pub fn serve_listener(listener: std::net::TcpListener) -> Result<()> {
+    let port = listener.local_addr()?.port();
+    let server =
+        Server::from_listener(listener, None).map_err(|e| anyhow::anyhow!("listen: {e}"))?;
+    let conn = index::open()?;
+    run_server(server, conn, port)
+}
+
+fn run_server(server: Server, mut conn: Connection, port: u16) -> Result<()> {
     // Several handlers, each with its own connection: WAL lets them read side
     // by side, so a sync or a slow search no longer stalls every other request
     // (the desktop app's whole UI) until it finishes.
