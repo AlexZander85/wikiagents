@@ -813,3 +813,42 @@ fn exclude_short_keeps_a_session_from_the_last_day() {
     let ids: Vec<&str> = rows.iter().map(|r| r.session_id.as_str()).collect();
     assert_eq!(ids, ["fresh"]);
 }
+
+#[test]
+fn exclude_short_keeps_sessions_that_touched_files() {
+    let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let (conn, _dir) = fresh_index();
+    let ago = |hours| (chrono::Utc::now() - chrono::Duration::hours(hours)).to_rfc3339();
+    // Two one-message sessions old enough to count as short. One of them edited
+    // a file, so it is the result of a `trace` and stays visible: hiding it makes
+    // a change unattributable while the file page still points at it.
+    for (id, touched) in [("with_edit", true), ("without_edit", false)] {
+        conn.execute(
+            "INSERT OR REPLACE INTO files
+             (path, mtime, size, session_id, tool, project, title, started, ended, msg_count, kind)
+             VALUES (?1, 0, 0, ?2, 'test-tool', 'proj', ?2, ?3, ?3, 1, 'main')",
+            params![format!("/fake/{id}.json"), id, ago(72)],
+        )
+        .unwrap();
+        if touched {
+            conn.execute(
+                "INSERT INTO touched(session_id, path) VALUES (?1, ?2)",
+                params![id, "src/main.rs"],
+            )
+            .unwrap();
+        }
+    }
+
+    let rows = index::recent_range(
+        &conn,
+        10,
+        &index::ListQuery {
+            exclude_short: true,
+            ..Default::default()
+        },
+        index::SessionSort::LastActive,
+    )
+    .unwrap();
+    let ids: Vec<&str> = rows.iter().map(|r| r.session_id.as_str()).collect();
+    assert_eq!(ids, ["with_edit"]);
+}

@@ -3188,6 +3188,13 @@
     flex-direction: column;
     gap: 12px;
   }
+  .commit-checking {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--ink-2);
+    font-size: 12px;
+  }
   .commit-modal-sha-row {
     display: flex;
     align-items: center;
@@ -3682,6 +3689,7 @@ const I18N = {
     showWebChats: "🌐 Веб-чаты",
     showShort: "💬 Короткие",
     shortHiddenMatches: (n) => `Скрыто коротких сессий с этим запросом: ${n}. Показать`,
+    shortHiddenFeed: (n) => `скрыто ${n} коротких · показать`,
     subagentsLabel: "Подагенты",
     parent: "Родитель",
     parentSession: "Родительская сессия",
@@ -3697,6 +3705,32 @@ const I18N = {
     resumeLabel: "продолжить в терминале: ",
     copied: "скопировано",
     clickToCopy: "Нажмите для копирования",
+    commitModalTitle: (s) => `Коммит ${s}`,
+    commitClose: "Закрыть (Esc)",
+    commitCopy: "Скопировать",
+    commitCopySha: "Скопировать SHA",
+    commitShaCopied: "SHA скопирован",
+    commitCmdCopied: "Команда скопирована",
+    commitChecking: "Проверка состояния в Git...",
+    commitUnpushedTitle: "Локальный коммит (не отправлен в удалённый репозиторий)",
+    commitUnpushedDesc: "Этот коммит существует только в локальном Git-репозитории на вашем компьютере. На сервере его ещё нет, поэтому ссылка выдаёт ошибку 404 Not Found.",
+    commitPushHint: "Чтобы отправить коммит, выполните:",
+    commitPushManyBranches: "Коммит сразу в нескольких локальных ветках — укажите нужную для git push.",
+    commitPushNoBranch: "Коммит не входит ни в одну локальную ветку (возможно, detached HEAD) — ветку для git push укажите вручную.",
+    commitPushedTitle: (b) => `Отправлен в удалённый репозиторий (${b})`,
+    commitPushedDesc: "Коммит входит в refs origin/* по данным последнего fetch; сам сервер не проверялся.",
+    commitOtherRemotes: (r) => `Также в других удалённых: ${r}`,
+    commitLocalTitle: "Информация из журнала сессии",
+    commitLocalDesc: "Локальный Git-репозиторий проекта недоступен по указанному пути или коммит был перезаписан.",
+    commitAuthor: "Автор:",
+    commitDate: "Дата:",
+    commitFilesChanged: "Изменённые файлы:",
+    commitOpenHost: (h) => `Открыть на ${h}`,
+    commitOpenRemote: "Открыть в удалённом репозитории",
+    commitOpenDetails: "открыть детали",
+    commitOpenHostTip: "Открыть в удалённом репозитории (для локального коммита нужен git push)",
+    commitMaybe404: "может быть 404",
+    commitConfirmUnpushed: "Внимание: этот коммит ещё не отправлен в удалённый репозиторий (git push не выполнялся), поэтому сервер вернёт ошибку 404.\n\nВсё равно открыть ссылку?",
     outline: (n) => `План · ${n} запросов`,
     seeAlso: "Связанные сессии", filtering: "фильтрация", filterByTag: "фильтр по тегу",
     recent: "Недавние", recentTitle: "Недавно просмотренные сессии", recentOpened: "Недавно открытые",
@@ -3800,6 +3834,7 @@ const I18N = {
     showWebChats: "🌐 Web Chats",
     showShort: "💬 Short",
     shortHiddenMatches: (n) => `${n} short sessions match and are hidden. Show them`,
+    shortHiddenFeed: (n) => `${n} short sessions hidden · show them`,
     subagentsLabel: "Subagents",
     parent: "Parent",
     parentSession: "Parent session",
@@ -3815,6 +3850,32 @@ const I18N = {
     resumeLabel: "resume in terminal: ",
     copied: "copied",
     clickToCopy: "Click to copy",
+    commitModalTitle: (s) => `Commit ${s}`,
+    commitClose: "Close (Esc)",
+    commitCopy: "Copy",
+    commitCopySha: "Copy SHA",
+    commitShaCopied: "SHA copied",
+    commitCmdCopied: "Command copied",
+    commitChecking: "Checking git state...",
+    commitUnpushedTitle: "Local commit (not pushed to the remote)",
+    commitUnpushedDesc: "This commit exists only in the local git repository on this machine. The server does not have it yet, so the link returns 404 Not Found.",
+    commitPushHint: "To push the commit, run:",
+    commitPushManyBranches: "The commit is in several local branches - pick the one to git push.",
+    commitPushNoBranch: "The commit is in no local branch (detached HEAD?) - name the branch for git push yourself.",
+    commitPushedTitle: (b) => `Pushed to the remote (${b})`,
+    commitPushedDesc: "The commit is in origin/* refs as of the last fetch; the server itself was not contacted.",
+    commitOtherRemotes: (r) => `Also on other remotes: ${r}`,
+    commitLocalTitle: "From the session log",
+    commitLocalDesc: "The project's local git repository is not reachable at that path, or the commit was rewritten.",
+    commitAuthor: "Author:",
+    commitDate: "Date:",
+    commitFilesChanged: "Changed files:",
+    commitOpenHost: (h) => `Open on ${h}`,
+    commitOpenRemote: "Open in the remote repository",
+    commitOpenDetails: "open details",
+    commitOpenHostTip: "Open in the remote repository (a local commit needs git push first)",
+    commitMaybe404: "may 404",
+    commitConfirmUnpushed: "This commit has not been pushed to the remote yet (no git push), so the server returns 404.\n\nOpen the link anyway?",
     outline: (n) => `Outline · ${n} turns`,
     seeAlso: "See also", filtering: "filtering", filterByTag: "filter by tag",
     recent: "Recent", recentTitle: "Recently Viewed Sessions", recentOpened: "Recently Opened",
@@ -3921,6 +3982,7 @@ const I18N = {
     showWebChats: "🌐 웹 채팅",
     showShort: "💬 짧은 세션",
     shortHiddenMatches: (n) => `숨겨진 짧은 세션 ${n}개가 일치합니다. 표시`,
+    shortHiddenFeed: (n) => `짧은 세션 ${n}개 숨김 · 표시`,
     subagentsLabel: "서브에이전트",
     parent: "상위",
     parentSession: "상위 세션",
@@ -3935,6 +3997,32 @@ const I18N = {
     resumeLabel: "터미널에서 이어가기: ",
     copied: "복사됨",
     clickToCopy: "클릭하여 복사",
+    commitModalTitle: (s) => `커밋 ${s}`,
+    commitClose: "닫기 (Esc)",
+    commitCopy: "복사",
+    commitCopySha: "SHA 복사",
+    commitShaCopied: "SHA가 복사되었습니다",
+    commitCmdCopied: "명령이 복사되었습니다",
+    commitChecking: "Git 상태 확인 중...",
+    commitUnpushedTitle: "로컬 커밋 (원격 저장소에 푸시되지 않음)",
+    commitUnpushedDesc: "이 커밋은 이 컴퓨터의 로컬 Git 저장소에만 있습니다. 서버에 아직 없으므로 링크는 404 Not Found를 반환합니다.",
+    commitPushHint: "커밋을 푸시하려면 실행:",
+    commitPushManyBranches: "커밋이 여러 로컬 브랜치에 있습니다 — git push할 브랜치를 지정하세요.",
+    commitPushNoBranch: "커밋이 로컬 브랜치에 없습니다 (detached HEAD?) — git push할 브랜치를 직접 지정하세요.",
+    commitPushedTitle: (b) => `원격 저장소에 푸시됨 (${b})`,
+    commitPushedDesc: "마지막 fetch 시점 기준으로 origin/* refs에 있습니다. 서버 자체는 확인하지 않았습니다.",
+    commitOtherRemotes: (r) => `다른 원격에도: ${r}`,
+    commitLocalTitle: "세션 로그 정보",
+    commitLocalDesc: "프로젝트의 로컬 Git 저장소에 접근할 수 없거나 커밋이 재작성되었습니다.",
+    commitAuthor: "작성자:",
+    commitDate: "날짜:",
+    commitFilesChanged: "변경된 파일:",
+    commitOpenHost: (h) => `${h}에서 열기`,
+    commitOpenRemote: "원격 저장소에서 열기",
+    commitOpenDetails: "자세히 열기",
+    commitOpenHostTip: "원격 저장소에서 열기 (로컬 커밋은 git push가 필요합니다)",
+    commitMaybe404: "404일 수 있음",
+    commitConfirmUnpushed: "이 커밋은 아직 원격 저장소에 푸시되지 않았습니다 (git push 안 함). 서버가 404를 반환합니다.\n\n그래도 링크를 열까요?",
     outline: (n) => `목차 · 질문 ${n}개`,
     seeAlso: "관련 세션", filtering: "필터", filterByTag: "태그로 필터",
     recent: "최근 세션", recentTitle: "최근 본 세션", recentOpened: "최근 열어본 세션",
@@ -4022,6 +4110,7 @@ const I18N = {
     showWebChats: "🌐 ウェブチャット",
     showShort: "💬 短いセッション",
     shortHiddenMatches: (n) => `非表示の短いセッション ${n}件が一致します。表示`,
+    shortHiddenFeed: (n) => `短いセッション ${n}件を非表示 · 表示`,
     subagentsLabel: "サブエージェント",
     parent: "親",
     parentSession: "親セッション",
@@ -4036,6 +4125,32 @@ const I18N = {
     resumeLabel: "ターミナルで再開: ",
     copied: "コピー済み",
     clickToCopy: "クリックでコピー",
+    commitModalTitle: (s) => `コミット ${s}`,
+    commitClose: "閉じる (Esc)",
+    commitCopy: "コピー",
+    commitCopySha: "SHAをコピー",
+    commitShaCopied: "SHAをコピーしました",
+    commitCmdCopied: "コマンドをコピーしました",
+    commitChecking: "Gitの状態を確認中...",
+    commitUnpushedTitle: "ローカルコミット（リモートに未push）",
+    commitUnpushedDesc: "このコミットはこのPCのローカルGitリポジトリにしか存在しません。サーバーにはまだないため、リンクは404 Not Foundを返します。",
+    commitPushHint: "コミットをpushするには次を実行:",
+    commitPushManyBranches: "コミットが複数のローカルブランチに含まれます — git pushするブランチを選んでください。",
+    commitPushNoBranch: "コミットがどのローカルブランチにもありません（detached HEAD?）— git pushするブランチを手動で指定してください。",
+    commitPushedTitle: (b) => `リモートにpush済み (${b})`,
+    commitPushedDesc: "最後のfetchの時点でorigin/*のrefsに含まれます。サーバー自体は確認していません。",
+    commitOtherRemotes: (r) => `他のリモートにも: ${r}`,
+    commitLocalTitle: "セッションログの情報",
+    commitLocalDesc: "プロジェクトのローカルGitリポジトリに指定パスでアクセスできないか、コミットが書き換えられました。",
+    commitAuthor: "作成者:",
+    commitDate: "日付:",
+    commitFilesChanged: "変更されたファイル:",
+    commitOpenHost: (h) => `${h}で開く`,
+    commitOpenRemote: "リモートリポジトリで開く",
+    commitOpenDetails: "詳細を開く",
+    commitOpenHostTip: "リモートリポジトリで開く（ローカルコミットはgit pushが必要）",
+    commitMaybe404: "404の可能性あり",
+    commitConfirmUnpushed: "このコミットはまだリモートにpushされていません（git push未実行）ため、サーバーは404を返します。\n\nそれでもリンクを開きますか？",
     outline: (n) => `目次 · ${n}ターン`,
     seeAlso: "関連セッション", filtering: "フィルタ", filterByTag: "タグで絞り込み",
     recent: "最近", recentTitle: "最近閲覧したセッション", recentOpened: "最近開いたセッション",
@@ -4123,6 +4238,7 @@ const I18N = {
     showWebChats: "🌐 网页聊天",
     showShort: "💬 短会话",
     shortHiddenMatches: (n) => `${n} 个已隐藏的短会话匹配。显示`,
+    shortHiddenFeed: (n) => `已隐藏 ${n} 个短会话 · 显示`,
     subagentsLabel: "子代理",
     parent: "父会话",
     parentSession: "父会话",
@@ -4137,6 +4253,32 @@ const I18N = {
     resumeLabel: "在终端继续: ",
     copied: "已复制",
     clickToCopy: "点击复制",
+    commitModalTitle: (s) => `提交 ${s}`,
+    commitClose: "关闭 (Esc)",
+    commitCopy: "复制",
+    commitCopySha: "复制 SHA",
+    commitShaCopied: "SHA 已复制",
+    commitCmdCopied: "命令已复制",
+    commitChecking: "正在检查 Git 状态...",
+    commitUnpushedTitle: "本地提交（未推送到远程）",
+    commitUnpushedDesc: "该提交只存在于本机的本地 Git 仓库中。服务器上还没有它，因此链接返回 404 Not Found。",
+    commitPushHint: "要推送该提交，请执行:",
+    commitPushManyBranches: "该提交同时在多个本地分支中 — 请指定要 git push 的分支。",
+    commitPushNoBranch: "该提交不在任何本地分支中（可能是 detached HEAD）— 请自行指定 git push 的分支。",
+    commitPushedTitle: (b) => `已推送到远程 (${b})`,
+    commitPushedDesc: "按最近一次 fetch 的数据，该提交在 origin/* 中；未实际向服务器验证。",
+    commitOtherRemotes: (r) => `也在其他远程: ${r}`,
+    commitLocalTitle: "来自会话日志的信息",
+    commitLocalDesc: "无法按该路径访问项目的本地 Git 仓库，或提交已被改写。",
+    commitAuthor: "作者:",
+    commitDate: "日期:",
+    commitFilesChanged: "改动的文件:",
+    commitOpenHost: (h) => `在 ${h} 打开`,
+    commitOpenRemote: "在远程仓库中打开",
+    commitOpenDetails: "打开详情",
+    commitOpenHostTip: "在远程仓库中打开（本地提交需要先 git push）",
+    commitMaybe404: "可能 404",
+    commitConfirmUnpushed: "注意：该提交尚未推送到远程仓库（未执行 git push），服务器会返回 404。\n\n仍要打开链接吗？",
     outline: (n) => `大纲 · ${n}轮`,
     seeAlso: "相关会话", filtering: "筛选", filterByTag: "按标签筛选",
     recent: "最近", recentTitle: "最近查看的会话", recentOpened: "最近打开的会话",
@@ -6048,21 +6190,43 @@ function renderCurrentSession(keepScroll) {
       const shortSha = c.sha.slice(0, 7);
       const commitRow = el("div", "commit-row");
       const commitChip = el("span", "chip chip-commit");
-      commitChip.innerHTML = `<svg viewBox="0 0 16 16" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:-1px;margin-right:3px;"><circle cx="8" cy="8" r="3"/><line x1="1" y1="8" x2="5" y2="8"/><line x1="11" y1="8" x2="15" y2="8"/></svg>${shortSha}`;
+      const chipIcon = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+      chipIcon.setAttribute("viewBox", "0 0 16 16");
+      chipIcon.setAttribute("width", "11");
+      chipIcon.setAttribute("height", "11");
+      chipIcon.setAttribute("fill", "none");
+      chipIcon.setAttribute("stroke", "currentColor");
+      chipIcon.setAttribute("stroke-width", "2");
+      chipIcon.style.cssText = "vertical-align:-1px;margin-right:3px;";
+      const dot = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+      dot.setAttribute("cx", "8");
+      dot.setAttribute("cy", "8");
+      dot.setAttribute("r", "3");
+      chipIcon.appendChild(dot);
+      for (const seg of [[1, 5], [11, 15]]) {
+        const line = document.createElementNS("http://www.w3.org/2000/svg", "line");
+        line.setAttribute("x1", seg[0]);
+        line.setAttribute("y1", "8");
+        line.setAttribute("x2", seg[1]);
+        line.setAttribute("y2", "8");
+        chipIcon.appendChild(line);
+      }
+      commitChip.appendChild(chipIcon);
+      commitChip.appendChild(document.createTextNode(shortSha));
 
-      const commitUrl = s.git_remote ? `${s.git_remote}/commit/${c.sha}` : null;
-      commitChip.title = `${shortSha} (скопировать SHA и посмотреть)`;
+      const commitUrl = commitHttpsUrl(s.git_remote ? `${s.git_remote}/commit/${c.sha}` : null);
+      commitChip.title = `${shortSha} (${L.commitOpenDetails})`;
       commitChip.onclick = (e) => {
         e.stopPropagation();
-        navigator.clipboard?.writeText(c.sha);
-        showToast(`✓ Commit SHA copied: ${shortSha}`);
+        // Copying lives in the dialog: overwriting the clipboard on a click that
+        // mainly opens details loses whatever the user copied last.
         openCommitModal(c.sha, s.project, s.git_remote, c.message, s.git_branch);
       };
       commitRow.appendChild(commitChip);
 
       if (c.message) {
         const msgSpan = el("span", "commit-msg", c.message);
-        msgSpan.title = `${c.message} (посмотреть детали)`;
+        msgSpan.title = `${c.message} (${L.commitOpenDetails})`;
         msgSpan.style.cursor = "pointer";
         msgSpan.onclick = () => openCommitModal(c.sha, s.project, s.git_remote, c.message, s.git_branch);
         commitRow.appendChild(msgSpan);
@@ -6073,7 +6237,7 @@ function renderCurrentSession(keepScroll) {
         extLink.href = commitUrl;
         extLink.target = "_blank";
         extLink.rel = "noopener noreferrer";
-        extLink.title = "Открыть на GitHub/GitLab (требуется git push для локальных коммитов)";
+        extLink.title = L.commitOpenHostTip;
         extLink.onclick = (e) => e.stopPropagation();
         commitRow.appendChild(extLink);
       }
@@ -6716,6 +6880,22 @@ function listSummary(r) {
 // render, or a slow earlier search lands on top of a newer list.
 let refreshSeq = 0;
 
+// The sidebar toggles, spelled the same way for every endpoint that lists or
+// counts sessions (feed, hidden count, header, analytics) so their numbers
+// cannot drift apart.
+function scopeParams() {
+  const subParam = $("show-subagents-cb") && $("show-subagents-cb").checked ? "&subagents=1" : "";
+  const showWeb = $("show-webchats-cb") ? $("show-webchats-cb").checked : true;
+  const showShort = $("show-short-cb") ? $("show-short-cb").checked : false;
+  return {
+    subParam,
+    webParam: !showWeb ? "&no_web=1" : "",
+    shortParam: !showShort ? "&no_short=1" : "",
+    showWeb,
+    showShort,
+  };
+}
+
 async function refresh() {
   const seq = ++refreshSeq;
   const inputVal = $("q").value.trim();
@@ -6726,11 +6906,7 @@ async function refresh() {
   const { since, until } = getDateBounds();
   const sParam = since ? `&since=${encodeURIComponent(since)}` : "";
   const uParam = until ? `&until=${encodeURIComponent(until)}` : "";
-  const subParam = $("show-subagents-cb") && $("show-subagents-cb").checked ? "&subagents=1" : "";
-  const showWeb = $("show-webchats-cb") ? $("show-webchats-cb").checked : true;
-  const webParam = !showWeb ? "&no_web=1" : "";
-  const showShort = $("show-short-cb") ? $("show-short-cb").checked : false;
-  const shortParam = !showShort ? "&no_short=1" : "";
+  const { subParam, webParam, shortParam, showWeb } = scopeParams();
   const tagParam = currentTag ? `&tag=${encodeURIComponent(currentTag)}` : "";
   let projParam = "";
   let folderParam = "";
@@ -6739,6 +6915,9 @@ async function refresh() {
   // so its limit is not used up by the rest of the repository.
   if (currentProject) projParam = `&project=${encodeURIComponent(currentProject)}`;
   if (currentProject !== null) folderParam = `&folder=${encodeURIComponent(currentProject)}`;
+  // The listing filters without the short-session toggle: a count request adds
+  // it back so it counts exactly what the feed hides.
+  const listScope = `${t}${folderParam}${sParam}${uParam}${subParam}${webParam}`;
   // The listing is sorted by the server so "created" and "message count"
   // cover every session, not just the 500 most recently active.
   const sortMode = $("sort-mode") ? $("sort-mode").value : "last_active";
@@ -6837,16 +7016,32 @@ async function refresh() {
     if (seq !== refreshSeq || !hidden || !hidden.length) return;
     const empty = $("list").querySelector(".empty");
     if (!empty) return;
-    const show = el("a", "", L.shortHiddenMatches(hidden.length));
-    show.href = "#";
-    show.style.cssText = "display:block;margin-top:8px;color:var(--accent);";
-    show.onclick = (e) => {
-      e.preventDefault();
-      $("show-short-cb").checked = true;
-      $("show-short-cb").dispatchEvent(new Event("change"));
-    };
-    empty.appendChild(show);
+    appendShortHint(empty, L.shortHiddenMatches(hidden.length));
+    return;
   }
+
+  // The feed hides short sessions by default; a cheap count says how many are
+  // behind the list, and one click lets them back in.
+  if (shortParam && !searchUrl && !currentFileTrace && items.length) {
+    jget("/api/short_hidden" + listScope.replace(/^&/, "?"))
+      .then((res) => {
+        if (seq !== refreshSeq || !res || !res.hidden) return;
+        appendShortHint($("list"), L.shortHiddenFeed(res.hidden));
+      })
+      .catch(() => {});
+  }
+}
+
+function appendShortHint(target, text) {
+  const show = el("a", "", text);
+  show.href = "#";
+  show.style.cssText = "display:block;margin-top:8px;color:var(--accent);";
+  show.onclick = (e) => {
+    e.preventDefault();
+    $("show-short-cb").checked = true;
+    $("show-short-cb").dispatchEvent(new Event("change"));
+  };
+  target.appendChild(show);
 }
 
 // A removable chip above the list when a tag filter is active.
@@ -6907,6 +7102,7 @@ function renderTagBar() {
 if ($("show-subagents-cb")) {
   $("show-subagents-cb").addEventListener("change", () => {
     refresh();
+    loadStats();
   });
 }
 
@@ -6919,6 +7115,7 @@ if ($("show-webchats-cb")) {
     localStorage.setItem("wikiagents-show-webchat", $("show-webchats-cb").checked ? "1" : "0");
     updateToolSelectOptions();
     refresh();
+    loadStats();
   });
 }
 
@@ -6932,6 +7129,7 @@ if ($("show-short-cb")) {
   $("show-short-cb").addEventListener("change", () => {
     localStorage.setItem("wikiagents-show-short", $("show-short-cb").checked ? "1" : "0");
     refresh();
+    loadStats();
   });
 }
 
@@ -7270,7 +7468,11 @@ function updateToolSelectOptions() {
 }
 
 async function loadStats() {
-  const stats = await jget("/api/stats");
+  // The header counts with the feed's filters, on the server, by the same rule
+  // the list uses - summing the per-tool rows here counted subagents and
+  // ignored both toggles.
+  const { subParam, webParam, shortParam } = scopeParams();
+  const stats = await jget("/api/stats" + (subParam + webParam + shortParam).replace(/^&/, "?"));
   if (!stats) return;
   if (stats.version) {
     document.title = `WikiAgents v${stats.version}`;
@@ -7281,26 +7483,23 @@ async function loadStats() {
     availableTagsList = stats.tags;
     renderAvailableTags();
   }
-  let sessions = 0, bytes = 0;
   cachedStatsTools = stats.tools || [];
   updateToolSelectOptions();
 
   const snippetToolSelect = $("snippet-tool");
   const existingSnippetTools = snippetToolSelect ? new Set(Array.from(snippetToolSelect.options).map((o) => o.value)) : new Set();
   for (const t of stats.tools) {
-    sessions += t.sessions;
-    bytes += t.bytes;
     if (snippetToolSelect && !existingSnippetTools.has(t.tool)) {
       const opt = el("option", "", t.tool);
       opt.value = t.tool;
       snippetToolSelect.appendChild(opt);
     }
   }
-  const displayToolsCount = ($("show-webchats-cb") && !$("show-webchats-cb").checked)
-    ? stats.tools.filter(t => !t.tool.endsWith("-web")).length
-    : stats.tools.length;
-  $("stats").textContent =
-    L.stats(sessions.toLocaleString(), displayToolsCount, fmtBytes(bytes));
+  const v = stats.visible;
+  if (v) {
+    $("stats").textContent =
+      L.stats(Number(v.sessions).toLocaleString(), v.tools, fmtBytes(v.bytes));
+  }
 }
 
 // One sync at a time from this page: a second press (or the auto timer firing
@@ -8896,7 +9095,8 @@ async function loadActivityAnalytics() {
   if (!main) return;
   main.replaceChildren(el("div", "placeholder", L.loading || "Loading analytics..."));
   try {
-    const raw = await jget("/api/analytics");
+    const { webParam, shortParam } = scopeParams();
+    const raw = await jget("/api/analytics" + (webParam + shortParam).replace(/^&/, "?"));
     actData = actPrepare(raw);
     renderActivityDashboard();
   } catch (err) {

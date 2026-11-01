@@ -2,14 +2,57 @@
 
 ## [Unreleased]
 
+### Security
+- **The commit inspector can no longer run code from a branch or remote name**: the
+  dialog built its buttons with inline handlers containing the values it had just
+  fetched, so a branch called `x');window.__xss=1;//` executed when «Скопировать» was
+  clicked — and the page can reach the delete and backup endpoints. Buttons are now
+  real elements with attached listeners, and a link is offered only for an `http(s)`
+  URL: `normalize_git_web_url` refuses `javascript:`, `data:`, `file:`, embedded
+  whitespace, quotes and a query or fragment instead of passing them through.
+- **A commit hash is checked before it is used**: `sha` that is not 4-64 hexadecimal
+  characters now gets a 400 instead of being matched as a `LIKE` template, where `%`
+  would have returned some other commit's message. A recorded message is read for the
+  session that made the commit, and a non-ASCII paste no longer returns a 500.
+
 ### Fixed
 - **Antigravity transcripts prefer `transcript_full.jsonl`**: previously preferred compact `transcript.jsonl`, which truncates long assistant replies, tables, and Mermaid diagrams with `<truncated N bytes>` placeholders. Now imports the complete, untruncated transcript without loss.
+- **«Отправлен» means sent to `origin`**: a commit was called pushed when *any* remote
+  held it, so a fork's `upstream` claimed a push that never happened; the other remotes
+  are now listed separately, and the text says the answer comes from the last `fetch`
+  rather than from the server.
+- **The push command names the branch that holds the commit**, found with
+  `git branch --contains`, instead of the checked-out one — which in a detached
+  checkout meant the dialog offered `git push origin main` for a commit that was not on
+  `main`. With several branches or none, no command is offered.
+- **`/api/trace` and the file page honour the sidebar filters** the UI already sent
+  (`no_web`, `no_short`); they were applied in JavaScript after the limit, so a filtered
+  trace could come back empty.
+- **The project counters in the sidebar count what the feed shows**: a project said
+  3 210 sessions while opening it listed 1 169, because the counts ignored the filters.
+  The header «Сессий» and the Activity analytics follow the same rule.
 
 ### Changed
+- **Short sessions are hidden by default**: the «Короткие» filter starts off, so a
+  fresh feed shows the sessions worth reading; the checkbox and the «скрыто N» line
+  turn them back on.
+- **A short session that edited a file stays visible**: it is the answer to a
+  `trace`, and hiding it leaves a change unattributed while the file page still links
+  to it.
 - **Short sessions filter keeps the last day**: a session from the last 24 hours stays in the feed however few messages it has, so one that just started no longer goes missing.
+- **The commit inspector is translated** into all five UI languages, and its button
+  names the host it opened (`github.com`) instead of saying «GitHub» for a GitLab or
+  Gitea remote. Clicking a commit pill no longer overwrites the clipboard.
+- **The hidden-short count costs one cheap query**: the feed says «скрыто N коротких ·
+  показать» and asks the index for `N` instead of fetching the hidden sessions a second
+  time.
 
 ### Added
 - **Hidden short matches in search**: an empty search says how many short sessions match and shows them on click.
+- **`/api/short_hidden`**: the number of sessions the short filter hides for the
+  current filters, so the hint can be counted without reading the feed twice.
+- **`/api/stats` now answers with `visible`** — the sessions, bytes and tools under
+  the current filters — beside the tools it has always listed.
 
 ## [1.4.1] - 2026-11-01 (WikiAgents)
 

@@ -2802,7 +2802,9 @@ fn push_session_scope(
                          AND (m.role = 'tool' OR (m.role = 'assistant' AND length(m.text) >= 250))\
                    )) \
                    OR EXISTS(SELECT 1 FROM favorites fav WHERE fav.session_id = f.session_id) \
-                   OR EXISTS(SELECT 1 FROM notes n WHERE n.session_id = f.session_id)                    OR COALESCE(f.ended, f.started) >= ?)",
+                   OR EXISTS(SELECT 1 FROM notes n WHERE n.session_id = f.session_id) \
+                   OR EXISTS(SELECT 1 FROM touched t WHERE t.session_id = f.session_id) \
+                   OR COALESCE(f.ended, f.started) >= ?)",
         );
         // A session that just started has few messages because it just started.
         args.push(Box::new(
@@ -2856,49 +2858,45 @@ fn push_project_scope(sql: &mut String, args: &mut Vec<Box<dyn rusqlite::ToSql>>
     args.push(Box::new(format!("%{}%", escape_like(&key))));
 }
 
-pub fn recent_range(
-    conn: &Connection,
-    limit: usize,
-    query: &ListQuery<'_>,
-    sort: SessionSort,
-) -> Result<Vec<SessionRow>> {
-    let ListQuery {
-        tool,
-        project,
-        tag,
-        since,
-        until,
-        include_subagents,
-        exclude_web,
-        exclude_short,
-        folders,
-    } = *query;
-    let mut sql = format!(
-        "SELECT session_id, tool, path, project, title, started, msg_count, kind, {PREVIEW_SQL}, {SUMMARY_SQL}, {TAGS_SQL}, (archived_at IS NOT NULL), COALESCE(ended, started), parent_id
-         FROM files f WHERE 1=1",
-    );
+/// The session-level `AND ...` clauses for a query over `files f`, with their
+/// arguments in order. Lets a counter use exactly the rule the feed uses,
+/// instead of a second copy that drifts.
+pub fn session_scope_clauses(filters: &ListQuery<'_>) -> (String, Vec<Box<dyn rusqlite::ToSql>>) {
+    let mut sql = String::new();
     let mut args: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
-    // A tag filter is an explicit ask for *those* sessions; don't hide subagent
-    // hits behind the main-only default (the tag cloud counts every kind, so a
-    // sub-only tag would otherwise show in the cloud but return nothing here).
-    if !include_subagents && tag.is_none() {
-        sql.push_str(" AND kind = 'main'");
-    }
     push_session_scope(
         &mut sql,
         &mut args,
         &SearchFilters {
-            tool,
-            project,
+            tool: filters.tool,
+            project: filters.project,
             roles: None,
-            tag,
-            since,
-            until,
-            exclude_web,
-            exclude_short,
+            tag: filters.tag,
+            since: filters.since,
+            until: filters.until,
+            exclude_web: filters.exclude_web,
+            exclude_short: filters.exclude_short,
         },
     );
-    if let Some(folders) = folders {
+    (sql, args)
+}
+
+/// The `WHERE ...` of a session listing, parameters in order. Shared by
+/// [`recent_range`] and [`count_sessions`] so a count cannot drift away from the
+/// rows it is shown beside.
+fn listing_where(query: &ListQuery<'_>) -> (String, Vec<Box<dyn rusqlite::ToSql>>) {
+    let mut sql = String::from(" WHERE 1=1");
+    let mut args: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+    // A tag filter is an explicit ask for *those* sessions; don't hide subagent
+    // hits behind the main-only default (the tag cloud counts every kind, so a
+    // sub-only tag would otherwise show in the cloud but return nothing here).
+    if !query.include_subagents && query.tag.is_none() {
+        sql.push_str(" AND kind = 'main'");
+    }
+    let (scope_sql, scope_args) = session_scope_clauses(query);
+    sql.push_str(&scope_sql);
+    args.extend(scope_args);
+    if let Some(folders) = query.folders {
         if folders.is_empty() {
             sql.push_str(" AND 0");
         } else {
@@ -2909,12 +2907,49 @@ pub fn recent_range(
             }
         }
     }
-    // Recent means recently ACTIVE by default: a session resumed for weeks
-    // began long ago, and ordering by its start buried it below everything
-    // begun since. Sorting here rather than in the caller makes the "created"
-    // and "most messages" orders cover every session, not the newest `limit`.
-    // Both columns are UTC RFC 3339, so they order as text.
-    sql.push_str(&format!(" ORDER BY {} LIMIT {limit}", sort.order_by()));
+    (sql, args)
+}
+
+/// How many sessions a listing would return, without reading their rows.
+pub fn count_sessions(conn: &Connection, query: &ListQuery<'_>) -> Result<i64> {
+    let (clause, args) = listing_where(query);
+    let sql = format!("SELECT count(*) FROM files f{clause}");
+    let mut stmt = conn.prepare(&sql)?;
+    let n = stmt.query_row(
+        rusqlite::params_from_iter(args.iter().map(|a| a.as_ref())),
+        |r| r.get::<_, i64>(0),
+    )?;
+    Ok(n)
+}
+
+/// Sessions, bytes and distinct tools behind a listing: the header's numbers
+/// follow the same filter rule as the feed it sits above.
+pub fn visible_totals(conn: &Connection, query: &ListQuery<'_>) -> Result<(i64, i64, i64)> {
+    let (clause, args) = listing_where(query);
+    let sql = format!(
+        "SELECT count(*), coalesce(sum(f.size), 0), count(DISTINCT f.tool) FROM files f{clause}"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let row = stmt.query_row(
+        rusqlite::params_from_iter(args.iter().map(|a| a.as_ref())),
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+    )?;
+    Ok(row)
+}
+
+pub fn recent_range(
+    conn: &Connection,
+    limit: usize,
+    query: &ListQuery<'_>,
+    sort: SessionSort,
+) -> Result<Vec<SessionRow>> {
+    let (clause, args) = listing_where(query);
+    let sql = format!(
+        "SELECT session_id, tool, path, project, title, started, msg_count, kind, {PREVIEW_SQL}, {SUMMARY_SQL}, {TAGS_SQL}, (archived_at IS NOT NULL), COALESCE(ended, started), parent_id
+         FROM files f{clause}
+         ORDER BY {} LIMIT {limit}",
+        sort.order_by()
+    );
 
     let mut stmt = conn.prepare(&sql)?;
     let rows = stmt.query_map(
@@ -4592,6 +4627,17 @@ pub fn sessions_for_file(
     query: &str,
     limit: usize,
 ) -> Result<Vec<(SessionRow, String)>> {
+    sessions_for_file_scoped(conn, query, limit, &ListQuery::default())
+}
+
+/// [`sessions_for_file`] with the listing filters applied in SQL, before the
+/// limit: filtering afterwards would drop the newest hits and keep older ones.
+pub fn sessions_for_file_scoped(
+    conn: &Connection,
+    query: &str,
+    limit: usize,
+    filters: &ListQuery<'_>,
+) -> Result<Vec<(SessionRow, String)>> {
     let q = path_query(query.trim().trim_matches('"'));
     let esc = q
         .replace('\\', "\\\\")
@@ -4600,20 +4646,43 @@ pub fn sessions_for_file(
     let suffix = format!("%/{esc}");
     let rooted = Path::new(&q).has_root();
     let (tp, fp) = (path_col("t.path"), path_col("f.project"));
-    let mut stmt = conn.prepare(&format!(
+    let mut sql = format!(
         "SELECT f.session_id, f.tool, f.path, f.project, f.title, f.started, f.msg_count, f.kind,
                 {SUMMARY_SQL}, {TAGS_SQL}, t.path, (f.archived_at IS NOT NULL)
          FROM touched t JOIN files f ON f.session_id = t.session_id
-         WHERE {tp} = ?1 COLLATE NOCASE OR {tp} LIKE ?2 ESCAPE '\\'
+         WHERE ({tp} = ?1 COLLATE NOCASE OR {tp} LIKE ?2 ESCAPE '\\'
             OR (length(?1) > length(t.path)
                 AND substr(?1, -length(t.path)) = {tp} COLLATE NOCASE
                 AND substr(?1, -length(t.path)-1, 1) = '/'
                 AND (NOT ?4
-                     OR rtrim({fp}, '/') || '/' || {tp} = ?1 COLLATE NOCASE))
-         GROUP BY f.session_id
-         ORDER BY f.started DESC, f.session_id LIMIT ?3"
-    ))?;
-    let rows = stmt.query_map(params![q, suffix, sql_limit(limit), rooted], |r| {
+                     OR rtrim({fp}, '/') || '/' || {tp} = ?1 COLLATE NOCASE)))"
+    );
+    let mut args: Vec<Box<dyn rusqlite::ToSql>> = vec![
+        Box::new(q.clone()),
+        Box::new(suffix.clone()),
+        Box::new(sql_limit(limit)),
+        Box::new(rooted),
+    ];
+    push_session_scope(
+        &mut sql,
+        &mut args,
+        &SearchFilters {
+            tool: filters.tool,
+            project: filters.project,
+            roles: None,
+            tag: filters.tag,
+            since: filters.since,
+            until: filters.until,
+            exclude_web: filters.exclude_web,
+            exclude_short: filters.exclude_short,
+        },
+    );
+    sql.push_str(" GROUP BY f.session_id ORDER BY f.started DESC, f.session_id LIMIT ?3");
+
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(
+        rusqlite::params_from_iter(args.iter().map(|a| a.as_ref())),
+        |r| {
         Ok((
             SessionRow {
                 last_active: None,
@@ -5177,13 +5246,23 @@ pub fn project_in_folder(project: &str, folder_key: &str) -> bool {
 }
 
 pub fn projects(conn: &Connection) -> Result<Vec<ProjectRow>> {
-    let mut stmt = conn.prepare(
+    projects_scoped(conn, &ListQuery::default())
+}
+
+/// [`projects`] with the listing filters, so a sidebar count and the list a
+/// project opens are the same set of sessions.
+pub fn projects_scoped(conn: &Connection, filters: &ListQuery<'_>) -> Result<Vec<ProjectRow>> {
+    let (scope, args) = session_scope_clauses(filters);
+    let sql = format!(
         "SELECT project, count(*), coalesce(sum(msg_count), 0), min(started),
                 max(COALESCE(ended, started))
-         FROM files WHERE kind = 'main' AND project != ''
-         GROUP BY project ORDER BY count(*) DESC, max(COALESCE(ended, started)) DESC",
-    )?;
-    let rows = stmt.query_map([], |r| {
+         FROM files f WHERE kind = 'main' AND project != ''{scope}
+         GROUP BY project ORDER BY count(*) DESC, max(COALESCE(ended, started)) DESC"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(
+        rusqlite::params_from_iter(args.iter().map(|a| a.as_ref())),
+        |r| {
         let project: String = r.get(0)?;
         Ok(ProjectRow {
             project_key: crate::util::project_root_key(&project),

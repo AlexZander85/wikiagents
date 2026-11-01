@@ -208,12 +208,13 @@ fn handle_request(
     }
     let result = match path {
         "/" => html(INDEX_HTML),
-        "/api/stats" => api_stats(conn),
+        "/api/stats" => api_stats(conn, query),
         "/api/sessions" => api_sessions(conn, query),
         "/api/search" => api_search(conn, query),
         "/api/trace" => api_trace(conn, query),
         "/api/file" => api_file(conn, query),
-        "/api/projects" => api_projects(conn),
+        "/api/projects" => api_projects(conn, query),
+        "/api/short_hidden" => api_short_hidden(conn, query),
         "/api/tag" => api_tag(conn, query),
         "/api/sync" => api_sync(conn, sync_lock),
         "/api/favorites" => api_favorites(conn),
@@ -228,7 +229,7 @@ fn handle_request(
         "/api/snippet/delete" => api_snippet_delete(conn, &mut request, query),
         "/api/snippet/rename" => api_snippet_rename(conn, &mut request, query),
         "/api/subagents" => api_subagents(conn, query),
-        "/api/analytics" => api_analytics(conn),
+        "/api/analytics" => api_analytics(conn, query),
         "/api/analytics/files" => api_analytics_files(conn, query),
         "/api/analytics/langs" => api_analytics_langs(conn, query),
         "/api/backup/status" => api_backup_status(conn),
@@ -374,7 +375,7 @@ fn json_response_with_status(v: serde_json::Value, status: u16) -> Result<Boxed>
         .boxed())
 }
 
-fn api_stats(conn: &Connection) -> Result<Boxed> {
+fn api_stats(conn: &Connection, query: &str) -> Result<Boxed> {
     let mut stmt = conn.prepare(
         "SELECT tool, count(*), sum(size), sum(msg_count) FROM files GROUP BY tool ORDER BY 2 DESC",
     )?;
@@ -394,49 +395,102 @@ fn api_stats(conn: &Connection) -> Result<Boxed> {
         .map(|(t, c)| json!({ "tag": t, "count": c }))
         .collect();
 
-    json_response(json!({ "tools": rows, "tags": tags, "version": env!("CARGO_PKG_VERSION") }))
+    // `tools` above is every tool ever indexed (the dropdowns list them all);
+    // `visible` is what the filtered feed shows, so the header and the list
+    // cannot disagree.
+    let filters = ListFilters::parse(conn, query)?;
+    let (sessions, bytes, tools) = index::visible_totals(conn, &filters.query())?;
+    json_response(json!({
+        "tools": rows,
+        "tags": tags,
+        "version": env!("CARGO_PKG_VERSION"),
+        "visible": { "sessions": sessions, "bytes": bytes, "tools": tools },
+    }))
+}
+
+/// The listing filters a page passes, kept owned so one parse can serve
+/// `/api/sessions`, `/api/projects` and the hidden-short count. They share the
+/// parameter names precisely so a count cannot disagree with the list beside it.
+#[derive(Default)]
+struct ListFilters {
+    tool: Option<String>,
+    project: Option<String>,
+    tag: Option<String>,
+    since: Option<String>,
+    until: Option<String>,
+    folders: Option<Vec<String>>,
+    include_subagents: bool,
+    exclude_web: bool,
+    exclude_short: bool,
+}
+
+impl ListFilters {
+    fn query(&self) -> index::ListQuery<'_> {
+        index::ListQuery {
+            tool: self.tool.as_deref(),
+            project: self.project.as_deref(),
+            tag: self.tag.as_deref(),
+            since: self.since.as_deref(),
+            until: self.until.as_deref(),
+            include_subagents: self.include_subagents,
+            exclude_web: self.exclude_web,
+            exclude_short: self.exclude_short,
+            folders: self.folders.as_deref(),
+        }
+    }
+
+    fn parse(conn: &Connection, query: &str) -> Result<Self> {
+        let tool_raw = param(query, "tool");
+        let folders = folder_param(query)
+            .map(|folder| index::project_folders(conn, &folder))
+            .transpose()?;
+        Ok(ListFilters {
+            tool: tool_raw
+                .as_deref()
+                .map(|t| crate::adapters::by_name(t).map(|a| a.name()).unwrap_or(t))
+                .map(str::to_string),
+            project: param(query, "project"),
+            tag: param(query, "tag"),
+            since: param(query, "since"),
+            until: param(query, "until"),
+            folders,
+            include_subagents: param(query, "subagents").is_some_and(|v| v == "1" || v == "true")
+                || param(query, "all").is_some_and(|v| v == "1" || v == "true"),
+            exclude_web: param(query, "no_web").is_some_and(|v| v == "1" || v == "true"),
+            exclude_short: param(query, "no_short").is_some_and(|v| v == "1" || v == "true"),
+        })
+    }
 }
 
 fn api_sessions(conn: &Connection, query: &str) -> Result<Boxed> {
-    let tool_raw = param(query, "tool");
-    let tool = tool_raw
-        .as_deref()
-        .map(|t| crate::adapters::by_name(t).map(|a| a.name()).unwrap_or(t));
-    let project = param(query, "project");
-    let tag = param(query, "tag");
-    let since = param(query, "since");
-    let until = param(query, "until");
     let limit = param(query, "limit")
         .and_then(|s| s.parse().ok())
         .unwrap_or(500);
-    let include_subagents = param(query, "subagents").is_some_and(|v| v == "1" || v == "true")
-        || param(query, "all").is_some_and(|v| v == "1" || v == "true");
-    let exclude_web = param(query, "no_web").is_some_and(|v| v == "1" || v == "true");
-    let exclude_short = param(query, "no_short").is_some_and(|v| v == "1" || v == "true");
-    let folders = folder_param(query)
-        .map(|folder| index::project_folders(conn, &folder))
-        .transpose()?;
+    let filters = ListFilters::parse(conn, query)?;
     let rows = index::recent_range(
         conn,
         limit,
-        &index::ListQuery {
-            tool,
-            project: project.as_deref(),
-            tag: tag.as_deref(),
-            since: since.as_deref(),
-            until: until.as_deref(),
-            include_subagents,
-            exclude_web,
-            exclude_short,
-            folders: folders.as_deref(),
-        },
+        &filters.query(),
         index::SessionSort::parse(param(query, "sort").as_deref().unwrap_or("")),
     )?;
     json_response(json!(rows.iter().map(row_json).collect::<Vec<_>>()))
 }
 
-fn api_projects(conn: &Connection) -> Result<Boxed> {
-    let rows = index::projects(conn)?;
+/// How many sessions the current filters would show if short/stub sessions were
+/// let back in. One cheap count pair - the feed itself is not fetched twice.
+fn api_short_hidden(conn: &Connection, query: &str) -> Result<Boxed> {
+    let filters = ListFilters::parse(conn, query)?;
+    let mut with_short = filters;
+    with_short.exclude_short = false;
+    let total = index::count_sessions(conn, &with_short.query())?;
+    with_short.exclude_short = true;
+    let kept = index::count_sessions(conn, &with_short.query())?;
+    json_response(json!({ "hidden": (total - kept).max(0) }))
+}
+
+fn api_projects(conn: &Connection, query: &str) -> Result<Boxed> {
+    let filters = ListFilters::parse(conn, query)?;
+    let rows = index::projects_scoped(conn, &filters.query())?;
     json_response(json!(rows
         .iter()
         .map(|p| json!({
@@ -561,7 +615,8 @@ fn api_trace(conn: &Connection, query: &str) -> Result<Boxed> {
         .and_then(|v| v.parse().ok())
         .unwrap_or(200);
     let folder = folder_param(query);
-    let mut hits = index::sessions_for_file(conn, &path, limit)?;
+    let filters = ListFilters::parse(conn, query)?;
+    let mut hits = index::sessions_for_file_scoped(conn, &path, limit, &filters.query())?;
     hits.retain(|(r, _)| in_folder(&folder, &r.project));
     json_response(json!(hits
         .iter()
@@ -859,8 +914,10 @@ fn api_commit(conn: &Connection, sha: &str) -> Result<Boxed> {
     }
 }
 
-/// Find the root repository directory containing `.git`
-pub fn find_git_root(path: &Path) -> Option<PathBuf> {
+/// The repository a path belongs to: its working-tree root and its git dir.
+/// A linked worktree's `.git` is a file pointing at the real git dir, so both
+/// are returned - the root for `git -C`, the dir for reading `HEAD` and config.
+fn locate_git_repo(path: &Path) -> Option<(PathBuf, PathBuf)> {
     let raw_str = path.to_string_lossy();
     let clean_str = raw_str.trim().trim_matches(['"', '\'']).trim();
     if clean_str.is_empty() {
@@ -878,14 +935,14 @@ pub fn find_git_root(path: &Path) -> Option<PathBuf> {
     for _ in 0..10 {
         let candidate = current.join(".git");
         if candidate.is_dir() {
-            return Some(current);
+            return Some((current.clone(), candidate));
         } else if candidate.is_file() {
             if let Ok(content) = std::fs::read_to_string(&candidate) {
                 if let Some(rest) = content.trim().strip_prefix("gitdir:") {
                     let pointer = rest.trim();
                     let resolved = current.join(pointer);
                     if resolved.exists() {
-                        return Some(current);
+                        return Some((current.clone(), resolved));
                     }
                 }
             }
@@ -900,6 +957,11 @@ pub fn find_git_root(path: &Path) -> Option<PathBuf> {
         }
     }
     None
+}
+
+/// Find the root repository directory containing `.git`
+pub fn find_git_root(path: &Path) -> Option<PathBuf> {
+    locate_git_repo(path).map(|(root, _)| root)
 }
 
 fn git_cmd(repo: &Path) -> std::process::Command {
@@ -963,20 +1025,53 @@ pub fn inspect_git_commit(repo: &Path, sha: &str) -> Option<serde_json::Value> {
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
         .unwrap_or_default();
 
-    let branch_out = git_cmd(repo)
-        .args(["branch", "-r", "--contains", &target_sha])
-        .output()
-        .ok();
-    let remote_branches: Vec<String> = branch_out
-        .map(|o| {
-            String::from_utf8_lossy(&o.stdout)
-                .lines()
-                .map(|l| l.trim().to_string())
-                .filter(|l| !l.is_empty() && !l.contains("->"))
-                .collect()
-        })
-        .unwrap_or_default();
+    // `for-each-ref` over the real ref namespaces: `git branch --contains` in a
+    // detached checkout prints a "(HEAD detached from …)" pseudo-entry even with
+    // `--format`, and that is not a branch anyone can push.
+    let ref_names = |namespace: &str| -> Vec<String> {
+        let contains = format!("--contains={target_sha}");
+        git_cmd(repo)
+            .args([
+                "for-each-ref",
+                &contains,
+                "--format=%(refname:short)",
+                namespace,
+            ])
+            .output()
+            .ok()
+            .map(|o| {
+                String::from_utf8_lossy(&o.stdout)
+                    .lines()
+                    .map(|l| l.trim().to_string())
+                    .filter(|l| !l.is_empty() && !l.ends_with("/HEAD"))
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+
+    // A commit is "sent" when origin's refs hold it: that is the remote the link
+    // is built from. A fork's `upstream` refs would otherwise claim a push that
+    // never happened, so they are reported separately.
+    let all_remote = ref_names("refs/remotes/");
+    let remote_branches: Vec<String> = all_remote
+        .iter()
+        .filter(|b| b.starts_with("origin/"))
+        .cloned()
+        .collect();
+    let other_remote_branches: Vec<String> = all_remote
+        .iter()
+        .filter(|b| !b.starts_with("origin/"))
+        .cloned()
+        .collect();
     let is_pushed = !remote_branches.is_empty();
+
+    // Which local branch to push is not the checked-out one: the commit may sit
+    // on another branch, or on none (detached HEAD), or on several.
+    let local_branches = ref_names("refs/heads/");
+    let push_branch = local_branches
+        .first()
+        .filter(|_| local_branches.len() == 1)
+        .cloned();
 
     let stat_out = git_cmd(repo)
         .args(["show", "--stat", "--oneline", &target_sha])
@@ -1004,6 +1099,9 @@ pub fn inspect_git_commit(repo: &Path, sha: &str) -> Option<serde_json::Value> {
         "body": body,
         "pushed": is_pushed,
         "remote_branches": remote_branches,
+        "other_remote_branches": other_remote_branches,
+        "local_branches": local_branches,
+        "push_branch": push_branch,
         "remote_url": git_remote,
         "commit_url": commit_url,
         "branch": git_branch,
@@ -1011,14 +1109,43 @@ pub fn inspect_git_commit(repo: &Path, sha: &str) -> Option<serde_json::Value> {
     }))
 }
 
+/// A git object id as users paste it: 4-64 hex characters. `%` and `_` are LIKE
+/// wildcards, so a value that is not hex is refused instead of being matched
+/// against - otherwise one commit's message could be shown for another.
+fn is_sha_hex(sha: &str) -> bool {
+    (4..=64).contains(&sha.len()) && sha.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+/// The subject the session log recorded for this commit, scoped to the session
+/// when the caller knows it. Prefix matching is by `substr`, never by `LIKE`.
+fn commit_message_for(conn: &Connection, sha: &str, session_id: Option<&str>) -> Option<String> {
+    let sql = match session_id {
+        Some(_) => "SELECT message FROM session_commits \
+                    WHERE session_id = ?2 AND substr(commit_sha, 1, length(?1)) = ?1 \
+                    LIMIT 1",
+        None => "SELECT message FROM session_commits \
+                 WHERE substr(commit_sha, 1, length(?1)) = ?1 LIMIT 1",
+    };
+    let mut stmt = conn.prepare_cached(sql).ok()?;
+    let row = match session_id {
+        Some(sid) => stmt.query_row(rusqlite::params![sha, sid], |r| r.get::<_, Option<String>>(0)),
+        None => stmt.query_row(rusqlite::params![sha], |r| r.get::<_, Option<String>>(0)),
+    };
+    row.ok().flatten()
+}
+
 fn api_git_commit(conn: &Connection, query: &str) -> Result<Boxed> {
-    let sha = param(query, "sha").unwrap_or_default();
-    let clean_sha = sha.trim();
+    let clean_sha = param(query, "sha")
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
     if clean_sha.is_empty() {
-        return Ok(
-            Response::from_string(json!({ "error": "missing commit sha" }).to_string())
-                .with_status_code(400)
-                .boxed(),
+        return json_response_with_status(json!({ "error": "missing commit sha" }), 400);
+    }
+    if !is_sha_hex(&clean_sha) {
+        return json_response_with_status(
+            json!({ "error": "commit sha must be 4-64 hexadecimal characters" }),
+            400,
         );
     }
 
@@ -1026,7 +1153,7 @@ fn api_git_commit(conn: &Connection, query: &str) -> Result<Boxed> {
     let session_id = param(query, "session_id").unwrap_or_default();
     if project.is_empty() && !session_id.is_empty() {
         if let Ok(p) = conn.query_row(
-            "SELECT project FROM sessions WHERE session_id = ?1",
+            "SELECT project FROM files WHERE session_id = ?1 LIMIT 1",
             rusqlite::params![session_id],
             |r| r.get::<_, String>(0),
         ) {
@@ -1034,15 +1161,11 @@ fn api_git_commit(conn: &Connection, query: &str) -> Result<Boxed> {
         }
     }
 
-    let mut db_message = None;
-    if let Ok(mut stmt) =
-        conn.prepare("SELECT message FROM session_commits WHERE commit_sha LIKE ?1 LIMIT 1")
-    {
-        let pattern = format!("{clean_sha}%");
-        if let Ok(m) = stmt.query_row(rusqlite::params![pattern], |r| r.get::<_, Option<String>>(0)) {
-            db_message = m;
-        }
-    }
+    let db_message = commit_message_for(
+        conn,
+        &clean_sha,
+        (!session_id.is_empty()).then_some(session_id.as_str()),
+    );
 
     let clean_proj = project.trim().trim_matches(['"', '\'']).trim();
     let proj_path = Path::new(clean_proj);
@@ -1053,71 +1176,24 @@ fn api_git_commit(conn: &Connection, query: &str) -> Result<Boxed> {
     };
 
     if let Some(repo) = repo_root {
-        if let Some(info) = inspect_git_commit(&repo, clean_sha) {
+        if let Some(info) = inspect_git_commit(&repo, &clean_sha) {
             return json_response(info);
         }
     }
 
-    let short = if clean_sha.len() >= 7 {
-        &clean_sha[..7]
-    } else {
-        clean_sha
-    };
     json_response(json!({
         "ok": true,
         "found_in_git": false,
         "sha": clean_sha,
-        "short_sha": short,
+        "short_sha": clean_sha.chars().take(7).collect::<String>(),
         "message": db_message,
     }))
 }
 
 /// Detect git remote web URL (GitHub, GitLab, Bitbucket) and branch from a repository directory
 pub fn detect_git_remote_and_branch(project_path: &Path) -> (Option<String>, Option<String>) {
-    let raw_str = project_path.to_string_lossy();
-    let clean_str = raw_str.trim().trim_matches(['"', '\'']).trim();
-    if clean_str.is_empty() {
-        return (None, None);
-    }
-    let clean_path = Path::new(clean_str);
-    let mut current = if clean_path.is_file() {
-        clean_path.parent().unwrap_or(clean_path).to_path_buf()
-    } else {
-        clean_path.to_path_buf()
-    };
-    if !current.exists() {
-        return (None, None);
-    }
-    let mut git_dir = None;
-    for _ in 0..10 {
-        let candidate = current.join(".git");
-        if candidate.is_dir() {
-            git_dir = Some(candidate);
-            break;
-        } else if candidate.is_file() {
-            if let Ok(content) = std::fs::read_to_string(&candidate) {
-                if let Some(rest) = content.trim().strip_prefix("gitdir:") {
-                    let pointer = rest.trim();
-                    let resolved = current.join(pointer);
-                    if resolved.exists() {
-                        git_dir = Some(resolved);
-                        break;
-                    }
-                }
-            }
-        }
-        if let Some(parent) = current.parent() {
-            if parent == current || parent.as_os_str().is_empty() {
-                break;
-            }
-            current = parent.to_path_buf();
-        } else {
-            break;
-        }
-    }
-
-    let git_dir = match git_dir {
-        Some(d) => d,
+    let (_root, git_dir) = match locate_git_repo(project_path) {
+        Some(found) => found,
         None => return (None, None),
     };
 
@@ -1166,12 +1242,12 @@ fn normalize_git_web_url(url: &str) -> Option<String> {
     let clean = url.trim().trim_end_matches(".git");
     if let Some(rest) = clean.strip_prefix("git@") {
         if let Some((host, repo)) = rest.split_once(':') {
-            return Some(format!("https://{host}/{repo}"));
+            return web_safe_url(&format!("https://{host}/{repo}"));
         }
     }
     if let Some(rest) = clean.strip_prefix("ssh://git@") {
         if let Some((host, repo)) = rest.split_once('/') {
-            return Some(format!("https://{host}/{repo}"));
+            return web_safe_url(&format!("https://{host}/{repo}"));
         }
     }
     if clean.starts_with("https://") || clean.starts_with("http://") {
@@ -1179,12 +1255,30 @@ fn normalize_git_web_url(url: &str) -> Option<String> {
             let proto = &clean[..pos];
             let rest = &clean[pos + 3..];
             if let Some(at) = rest.find('@') {
-                return Some(format!("{proto}://{}", &rest[at + 1..]));
+                return web_safe_url(&format!("{proto}://{}", &rest[at + 1..]));
             }
         }
-        return Some(clean.to_string());
+        return web_safe_url(clean);
     }
     None
+}
+
+/// A remote is repository configuration, not trusted input: the commit window
+/// appends `/commit/<sha>` to what this returns and puts it in a link. Only a
+/// plain http(s) origin+path survives - a `javascript:` scheme, embedded
+/// whitespace, quotes or a query would all land in the href the user clicks.
+fn web_safe_url(url: &str) -> Option<String> {
+    const ALLOWED: &str = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-._~:/";
+    let scheme_end = url.find("://")?;
+    let scheme = &url[..scheme_end];
+    let is_http = scheme.eq_ignore_ascii_case("https") || scheme.eq_ignore_ascii_case("http");
+    let has_authority_and_path = url[scheme_end + 3..].contains('/');
+    let plain = url.chars().all(|c| ALLOWED.contains(c));
+    if is_http && has_authority_and_path && plain {
+        Some(url.to_string())
+    } else {
+        None
+    }
 }
 
 fn api_favorites(conn: &Connection) -> Result<Boxed> {
@@ -1265,23 +1359,28 @@ fn api_subagents(conn: &Connection, query: &str) -> Result<Boxed> {
 /// and edit counts. The browser buckets these into its own local days and
 /// hours and any period it is asked for, which the server - not knowing the
 /// viewer's time zone - could not do correctly.
-fn api_analytics(conn: &Connection) -> Result<Boxed> {
+fn api_analytics(conn: &Connection, query: &str) -> Result<Boxed> {
     let mut tools: Vec<String> = Vec::new();
     let mut projects: Vec<String> = Vec::new();
     let mut tool_idx = std::collections::HashMap::<String, usize>::new();
     let mut project_idx = std::collections::HashMap::<String, usize>::new();
-    let mut stmt = conn.prepare(
+    // The same session filters the feed uses, so a project's count here is the
+    // number of sessions it opens afterwards.
+    let filters = ListFilters::parse(conn, query)?;
+    let (scope, args) = index::session_scope_clauses(&filters.query());
+    let sql = format!(
         "SELECT CAST(strftime('%s', COALESCE(f.started, datetime(f.mtime, 'unixepoch'))) AS INTEGER),
                 CAST(strftime('%s', COALESCE(f.ended, f.started, datetime(f.mtime, 'unixepoch'))) AS INTEGER),
                 f.tool, f.project, f.msg_count, COALESCE(e.n, 0)
          FROM files f
          LEFT JOIN (SELECT session_id, COUNT(*) AS n FROM edits GROUP BY session_id) e
            ON e.session_id = f.session_id
-         WHERE f.kind = 'main'
-         ORDER BY 1",
-    )?;
+         WHERE f.kind = 'main'{scope}
+         ORDER BY 1"
+    );
+    let mut stmt = conn.prepare(&sql)?;
     let mut sessions = Vec::new();
-    let mut rows = stmt.query([])?;
+    let mut rows = stmt.query(rusqlite::params_from_iter(args.iter().map(|a| a.as_ref())))?;
     while let Some(r) = rows.next()? {
         let Some(start) = r.get::<_, Option<i64>>(0)? else {
             continue;
@@ -2080,7 +2179,12 @@ fn api_backup_restore(
 
 #[cfg(test)]
 mod tests {
-    use super::{host_matches, origin_ok, should_open_browser};
+    use super::{
+        detect_git_remote_and_branch, host_matches, inspect_git_commit, origin_ok,
+        should_open_browser,
+    };
+    use serde_json::json;
+    use std::path::{Path, PathBuf};
 
     #[test]
     fn wsl_never_auto_opens_a_browser() {
@@ -2137,30 +2241,222 @@ mod tests {
     }
 
     #[test]
-    fn test_detect_git_remote_and_branch_self() {
-        use super::detect_git_remote_and_branch;
-        use std::path::Path;
-        let (remote, branch) = detect_git_remote_and_branch(Path::new("."));
-        assert!(remote.is_some(), "detects git remote for current repo");
-        let r = remote.unwrap();
-        assert!(
-            r.contains("wikiagents"),
-            "remote URL contains wikiagents: {}",
-            r
-        );
-        assert!(branch.is_some(), "detects git branch");
+    fn web_url_refuses_schemes_the_browser_would_execute() {
+        use super::normalize_git_web_url;
+        // A remote is user/repository config, not trusted input: whatever reaches
+        // the commit window must be an http(s) URL and nothing else.
+        for dangerous in [
+            "javascript:alert(1)",
+            "JavaScript:window.__xss=1",
+            "data:text/html,<script>alert(1)</script>",
+            "file:///C:/Windows/system32",
+            "vbscript:msgbox(1)",
+            " javascript:alert(1)",
+            "",
+            "github.com/org/repo",
+            "git://",
+        ] {
+            assert_eq!(normalize_git_web_url(dangerous), None, "accepted {dangerous:?}");
+        }
     }
 
     #[test]
-    fn test_inspect_git_commit_self() {
-        use super::inspect_git_commit;
-        use std::path::Path;
-        let info = inspect_git_commit(Path::new("."), "HEAD");
-        assert!(info.is_some(), "can inspect HEAD in current repo");
-        let v = info.unwrap();
-        assert_eq!(v["ok"], true);
-        assert_eq!(v["found_in_git"], true);
-        assert!(v["sha"].as_str().unwrap().len() >= 40);
-        assert!(v["author"].as_str().is_some());
+    fn sha_values_are_validated_as_hex_prefixes() {
+        use super::is_sha_hex;
+        assert!(is_sha_hex("1234"));
+        assert!(is_sha_hex("515b49c66097abc01234567890abcdef12345678"));
+        // `%` and `_` are LIKE wildcards: refused, so one commit's message can
+        // never be shown as another's.
+        for bad in ["", "123", "abc%", "a_b", "deadbeefx", "12 34", "хххх"] {
+            assert!(!is_sha_hex(bad), "accepted {bad:?}");
+        }
+        assert!(!is_sha_hex(&"a".repeat(65)));
+    }
+
+    #[test]
+    fn web_url_never_carries_a_query_fragment_or_credential() {
+        use super::normalize_git_web_url;
+        // The UI appends `/commit/<sha>` to this. A `#`, `?`, quote or space in
+        // the stored remote would end up inside the href the user clicks.
+        for tricky in [
+            "https://github.com/org/repo#head",
+            "https://github.com/org/repo?ref=main",
+            "https://github.com/org/re\npo",
+            "https://github.com/org/'repo",
+            "https://github.com",
+        ] {
+            assert_eq!(normalize_git_web_url(tricky), None, "accepted {tricky:?}");
+        }
+        // Credentials are stripped before the check, so they never reach the link.
+        assert_eq!(
+            normalize_git_web_url("https://user:pw@github.com/org/repo"),
+            Some("https://github.com/org/repo".into())
+        );
+        assert_eq!(
+            normalize_git_web_url("https://gitlab.example.com/group/sub/project"),
+            Some("https://gitlab.example.com/group/sub/project".into())
+        );
+    }
+
+    fn git_in(dir: &Path, args: &[&str]) {
+        let mut cmd = std::process::Command::new("git");
+        cmd.current_dir(dir)
+            .env("GIT_AUTHOR_NAME", "Dev")
+            .env("GIT_AUTHOR_EMAIL", "dev@example.com")
+            .env("GIT_COMMITTER_NAME", "Dev")
+            .env("GIT_COMMITTER_EMAIL", "dev@example.com")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .env_remove("GIT_DIR")
+            .args([
+                "-c",
+                "commit.gpgsign=false",
+                "-c",
+                "core.autocrlf=false",
+                "-c",
+                "gc.auto=0",
+            ])
+            .args(args);
+        let status = cmd.spawn().expect("git is installed").wait().unwrap();
+        assert!(status.success(), "git {args:?} failed");
+    }
+
+    fn git_out(dir: &Path, args: &[&str]) -> String {
+        let out = std::process::Command::new("git")
+            .current_dir(dir)
+            .args(args)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env_remove("GIT_DIR")
+            .output()
+            .expect("git is installed");
+        assert!(out.status.success(), "git {args:?} failed");
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    /// A throwaway repository with `origin` and `upstream` as local bare clones -
+    /// the fork layout that made "pushed" read as true for the wrong remote.
+    fn scratch_repo() -> (tempfile::TempDir, PathBuf) {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().to_path_buf();
+        let repo = root.join("work");
+        std::fs::create_dir_all(&repo).unwrap();
+        git_in(&repo, &["init", "-q", "-b", "main"]);
+        for name in ["origin", "upstream"] {
+            let bare = root.join(format!("{name}.git"));
+            git_in(
+                &root,
+                &["init", "-q", "--bare", bare.to_str().unwrap()],
+            );
+            git_in(&repo, &["remote", "add", name, bare.to_str().unwrap()]);
+        }
+        (tmp, repo)
+    }
+
+    fn commit_file(repo: &Path, name: &str, body: &str, message: &str) {
+        std::fs::write(repo.join(name), format!("{body}\n")).unwrap();
+        git_in(repo, &["add", "--", name]);
+        git_in(repo, &["commit", "-q", "-m", message]);
+    }
+
+    fn head_sha(repo: &Path) -> String {
+        git_out(repo, &["rev-parse", "HEAD"])
+    }
+
+    #[test]
+    fn pushed_counts_origin_refs_only() {
+        let (tmp, repo) = scratch_repo();
+        commit_file(&repo, "a.txt", "one", "add a");
+        git_in(&repo, &["push", "-q", "origin", "main"]);
+        let sha = head_sha(&repo);
+
+        let info = inspect_git_commit(&repo, &sha).expect("commit readable");
+        assert_eq!(info["ok"], true);
+        assert_eq!(info["found_in_git"], true);
+        assert_eq!(info["sha"].as_str().unwrap().len(), 40);
+        assert_eq!(info["pushed"], true);
+        assert_eq!(info["remote_branches"], json!(["origin/main"]));
+
+        git_in(&repo, &["push", "-q", "upstream", "main"]);
+        let info = inspect_git_commit(&repo, &sha).unwrap();
+        assert_eq!(info["other_remote_branches"], json!(["upstream/main"]));
+        assert_eq!(info["pushed"], true, "origin still holds it");
+
+        // A commit only on upstream is not pushed to the remote the link is
+        // built from, whatever the other remote's refs say.
+        commit_file(&repo, "b.txt", "two", "add b");
+        let newer = head_sha(&repo);
+        git_in(&repo, &["push", "-q", "upstream", "main"]);
+        let info = inspect_git_commit(&repo, &newer).unwrap();
+        assert_eq!(info["pushed"], false);
+        assert_eq!(info["remote_branches"], json!([]));
+        assert_eq!(info["other_remote_branches"], json!(["upstream/main"]));
+        drop(tmp);
+    }
+
+    #[test]
+    fn push_command_names_the_branch_holding_the_commit() {
+        let (tmp, repo) = scratch_repo();
+        commit_file(&repo, "a.txt", "one", "add a");
+        git_in(&repo, &["checkout", "-q", "-b", "feature"]);
+        commit_file(&repo, "b.txt", "two", "add b");
+        let sha = head_sha(&repo);
+        git_in(&repo, &["checkout", "-q", "main"]);
+
+        let info = inspect_git_commit(&repo, &sha).unwrap();
+        // HEAD is on main while the commit is on feature: the old guess
+        // ("git push origin main") would have pushed the wrong branch.
+        assert_eq!(info["branch"], "main");
+        assert_eq!(info["push_branch"], "feature");
+        assert_eq!(info["pushed"], false);
+
+        git_in(&repo, &["branch", "release", &sha]);
+        let info = inspect_git_commit(&repo, &sha).unwrap();
+        assert_eq!(
+            info["push_branch"],
+            serde_json::Value::Null,
+            "two candidate branches is not a coin flip"
+        );
+        assert_eq!(info["local_branches"], json!(["feature", "release"]));
+
+        git_in(&repo, &["checkout", "-q", "--detach", &sha]);
+        commit_file(&repo, "c.txt", "three", "add c");
+        let detached = head_sha(&repo);
+        let info = inspect_git_commit(&repo, &detached).unwrap();
+        assert_eq!(info["local_branches"], json!([]));
+        assert_eq!(
+            info["push_branch"],
+            serde_json::Value::Null,
+            "no branch holds the commit"
+        );
+        drop(tmp);
+    }
+
+    #[test]
+    fn detects_remote_url_and_branch_in_a_temp_repo() {
+        let (tmp, repo) = scratch_repo();
+        commit_file(&repo, "a.txt", "one", "add a");
+        git_in(
+            &repo,
+            &["remote", "set-url", "origin", "https://github.com/acme/tool.git"],
+        );
+        let (remote, branch) = detect_git_remote_and_branch(&repo);
+        assert_eq!(remote.as_deref(), Some("https://github.com/acme/tool"));
+        assert_eq!(branch.as_deref(), Some("main"));
+        drop(tmp);
+    }
+
+    #[test]
+    fn normalizes_local_and_unsupported_remotes_to_nothing() {
+        let (tmp, repo) = scratch_repo();
+        let info = {
+            commit_file(&repo, "a.txt", "one", "add a");
+            inspect_git_commit(&repo, &head_sha(&repo))
+        };
+        let info = info.unwrap();
+        // A local bare clone is not a web host: no link, so the UI cannot be
+        // handed a path to put in an href.
+        assert_eq!(info["remote_url"], serde_json::Value::Null);
+        assert_eq!(info["commit_url"], serde_json::Value::Null);
+        drop(tmp);
     }
 }
