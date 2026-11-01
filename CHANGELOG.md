@@ -91,6 +91,45 @@ progress on the `fix/review-1.3` branch; this section grows as each phase lands.
   folder never matched the same project written by another tool. The adapter
   un-escapes `Cwd`/`Path` while parsing, and antigravity's reader version moves
   to 3 so its existing rows are re-read (and re-keyed) once.
+- **A re-exported chat became a duplicate chat**: a session was keyed by export
+  file *and* chat id, so saving the same conversation to a new file left the old
+  listing indexed beside it — twice the sessions, with the stars and notes stuck
+  on whichever export was oldest. The id now comes from the chat itself
+  (`short_id("<tool>:<chat id>")`), the newest export of a chat wins (a tie goes
+  to the one holding more of the conversation), and the listing the store no
+  longer reports is dropped instead of archived as a deleted session. A chat whose
+  id *does* change keeps its tags, notes, summary, favorite and snippets, and the
+  transcript stays on disk while some export file still holds it — so a corrupt
+  new export cannot destroy a conversation.
+- **Web-chat sessions re-indexed as empty**: `parse_key` found the chat's
+  position in the file and then read that index out of the *outer* object, which
+  for Qwen and GLM is the `{ "success": …, "data": [ … ] }` wrapper rather than
+  the array of chats. Every re-parse of those tools produced a session with no
+  messages — and nothing failed, so nobody noticed. Fixed for all five vendors.
+- **The model's reasoning was thrown away**: no web adapter read the thinking
+  fields (`thinking`, `reasoning_content`, `thinking_content`, blocks of
+  `type: "thinking"`), so a DeepSeek or Qwen chat came back as only its final
+  answer, unlike every other tool indexed here. Each vendor's own spelling is kept
+  as the assistant turn it belongs to, and a Gemini export's own `exported_at`,
+  `complete` and `order` fields are used instead of the file's mtime.
+- **The brief disagreed with itself about files**: the header counted changed
+  files out of the transcript with the filter meant for pasted paths, while the
+  turn list used the recorded edits — so an Antigravity session whose folder was
+  named `game (demo)` printed «0 файлов изменено» two lines above «✎11». Recorded
+  `edits`/`touched` paths are trusted as stored (only empty and multi-line values
+  are rejected); the plausible-path filter now applies only to paths scraped out of
+  message text, which is what it was written for.
+- **A hardcoded export folder**: `web_session_roots()` looked at
+  `D:\wikiagents\web_session` first — the development machine's path shipped
+  inside the binary. Roots are now the environment variable, the folder next to
+  the executable, `~/.wikiagents`/`~/.agentwiki` and, last so that it stays usable
+  without being the default, a `web_session` folder in the current directory.
+- **Tests that could not fail**: the web-chat tests opened
+  `D:\wikiagents\web_session\*.json` and returned early when the file was not
+  there, so on any other machine they asserted nothing at all. They now read small
+  synthetic exports from `tests/fixtures/web_chat/` that carry the shape of each
+  vendor's real format — and they fail when parsing breaks, which is how the two
+  bugs above were found.
 
 ### Changed
 - **Parser version per tool**: `files.reader` now records the version of *that
@@ -137,6 +176,24 @@ progress on the `fix/review-1.3` branch; this section grows as each phase lands.
   integration test `tests/project_key_filter.rs` covers the escaped, quoted,
   mixed-case and subfolder spellings of one project, the backfill of rows that
   predate the column, and that a sibling folder is still not swept in.
+- **Web chats are re-read once**: `claude-web`, `deepseek-web`, `gemini-web`,
+  `qwen-web` and `glm-web` move to reader version 4, because their ids and their
+  thinking blocks changed. Only those five tools are re-parsed — the global
+  `index::READER` stays at 2, so nothing else pays for this.
+- **Finding a chat in an export is O(1)**: `JsonCache` builds a lazy
+  id → position map per file instead of scanning the chat array for every session
+  in it, and a lock left poisoned by a panicking thread no longer takes the whole
+  web-chat scan down with it.
+- **Code links are built for the host that serves them**: a GitHub remote gets
+  `/blob/<branch>/<path>#L10-L20`, a GitLab one `/-/blob/<branch>/<path>#L10-20`,
+  a Bitbucket one `/src/<branch>/<path>#lines-10:20`, and the button says which of
+  the three it opens. Alongside it is a real `cursor://file/<path>:<line>` button;
+  the VS Code one no longer claims to be both.
+- **`doctor` names the database it looked at**: the report has an `index path`
+  line, and when both `<exe_dir>/data/index.db` and
+  `<data_dir>/sessionwiki/index.db` exist it warns that the CLI and the GUI may be
+  reading different bases — the usual cause of «my sessions disappeared». Which
+  one is used did not change.
 
 ### Added
 - **`wikiagents hook install-git`** puts a two-line `prepare-commit-msg` hook in
@@ -172,6 +229,16 @@ progress on the `fix/review-1.3` branch; this section grows as each phase lands.
   snippet and an empty queue, reject keeps the record and saves nothing,
   redaction and caps, the MCP tool call, the CLI, and 403 for a decision sent
   without the header).
+- **Synthetic web-chat exports** in `tests/fixtures/web_chat/`
+  (`claude|deepseek|gemini|qwen|glm.json`): two chats per vendor, in each vendor's
+  real field shape — wrapped arrays, node chains, `fragments`, `message.attachments`,
+  reasoning blocks, `exported_at`/`complete`/`order` — and no personal transcript
+  in the repository. They are what the parser tests now read.
+- New tests for the reconciliation the new ids need: a session whose id changed
+  keeps the user's marks (`index::a_reparsed_id_takes_the_users_marks_with_it`),
+  and a chat re-exported to a second file is not archived as a deleted session
+  while its first export is still on disk
+  (`index::a_re_exported_chat_is_not_treated_as_a_deleted_session`).
 
 ## [1.2.1] - 2026-10-31 (WikiAgents)
 
@@ -201,8 +268,12 @@ progress on the `fix/review-1.3` branch; this section grows as each phase lands.
   - Interactive commit chips in session header with one-click GitHub/GitLab commit URL opening or clipboard copy.
 - **Clickable Web & IDE File Links in Web UI**:
   - Automatic Git remote origin and branch detection for repository workspaces (GitHub, GitLab, Bitbucket).
+    *(исправлено в 1.3.0: only the GitHub `/blob/<branch>/<path>` shape was built, so
+    GitLab and Bitbucket links were broken; the URL is now assembled per host.)*
   - Any file path or touched file reference in transcripts and header cards is transformed into an interactive web link pointing to the exact line numbers (e.g. `blob/main/src/auth.rs#L40-L52`).
   - Support for local editor URL schemes (`vscode://file/...`, `cursor://file/...`).
+    *(исправлено в 1.3.0: only `vscode://` existed — and its button said “Open in VS
+    Code / Cursor”; the `cursor://file/<path>:<line>` link is added in 1.3.0.)*
 - **Granular Incremental GitHub Backup & 1-Click Restore**:
   - Replaced monolithic database dumps with granular, per-session JSON files in `sessions/<tool>/<session_id>.json` (human-readable and searchable on GitHub).
   - Incremental fast sync: checks 5,160+ sessions in under 5 seconds, only writing and committing modified or new sessions.
@@ -210,10 +281,16 @@ progress on the `fix/review-1.3` branch; this section grows as each phase lands.
     - **1-Click Web UI Restore**: `📥 Восстановить из GitHub` button in the Backup dialog pulls updates and restores all sessions, tags, notes, and snippets.
     - **CLI Restore**: `wikiagents backup --restore [--repo <url>]`.
     - **Autonomous Zero-Dependency Restore Scripts**: Pre-packaged `restore.py` and `restore.ps1` in the backup repository root restore the complete SQLite `index.db` in ~3 seconds on any clean PC without needing Rust or WikiAgents pre-installed.
+      *(исправлено в 1.3.0: «zero-dependency» was wrong — Python 3 is required. `restore.ps1`
+      only finds `python` and runs `restore.py`, so neither script works without it; both
+      now say so, and `restore.py` was rewritten against the real schema.)*
   - Silent Windows execution: added `CREATE_NO_WINDOW` flags to all Git subprocesses, eliminating flashing terminal windows.
 - **Multi-Vendor Web Chat Adapters**:
   - Added native adapters for exported chats: Claude Web (`claude-web`), DeepSeek Web (`deepseek-web`), Gemini Web (`gemini-web`), Qwen Web (`qwen-web`), and GLM Web (`glm-web`).
   - Preserves formatting, markdown tables, code fences, thinking/reasoning blocks, and timestamps.
+    *(исправлено в 1.3.0: thinking was not preserved — no web adapter read the
+    reasoning fields, and re-indexing a Qwen or GLM export produced an empty
+    session. Both are fixed and covered by fixtures.)*
 - **Freebuff Desktop & free-pi-cli / Pi Harness Adapters**:
   - Full discovery and parsing for Freebuff Desktop SQLite stores (`~/.config/freebuff-desktop/` and `%APPDATA%\freebuff-desktop`).
   - Full discovery and parsing for `free-pi-cli` and upstream Pi JSONL sessions.
@@ -437,7 +514,9 @@ progress on the `fix/review-1.3` branch; this section grows as each phase lands.
 26. **Hermes Agent Adapter (`~/.hermes/state.db`)**:
     - Integration for Hermes SQLite-backed state and task history.
 27. **GitHub Copilot Transcript Discovery**:
-    - Discovers and parses GitHub Copilot chat conversations stored in VS Code workspaces.
+    - *(не реализовано — no adapter was ever shipped)*: `adapters::all()` has no
+      `copilot` entry and no Copilot transcript reader exists, so nothing in this
+      line works.
 
 ---
 
@@ -494,6 +573,10 @@ progress on the `fix/review-1.3` branch; this section grows as each phase lands.
     - One-click jump to original session with smooth scroll and target turn highlight pulse.
 46. **Durable Agent Memory Tool via MCP (`propose_memory` / `save_memory`)**:
     - Enables Claude Code, Codex, Cursor, and Antigravity to persist architectural decisions, bug causes, and project conventions directly into WikiAgents.
+    - *(уточнение: what shipped in 1.0.0 was `remember`; there was never a tool
+      called `save_memory`. `propose_memory` — the same note put through an
+      approval queue instead of straight into the knowledge base — is added in
+      1.3.0.)*
 47. **Synthesized Solution Retrieval for MCP Agents**:
     - `recall_solution`: high-level problem-solving tool prioritizing bookmarked (⭐) sessions.
     - `get_session_summary`: lightweight metadata and files retrieval without streaming large transcripts.
