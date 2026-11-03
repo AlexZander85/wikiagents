@@ -3716,6 +3716,7 @@ const I18N = {
     commitUnpushedDesc: "Этот коммит существует только в локальном Git-репозитории на вашем компьютере. На сервере его ещё нет, поэтому ссылка выдаёт ошибку 404 Not Found.",
     commitPushHint: "Чтобы отправить коммит, выполните:",
     commitPushManyBranches: "Коммит сразу в нескольких локальных ветках — укажите нужную для git push.",
+    commitPushUnsafeBranch: "В имени ветки есть символы, опасные для терминала, поэтому готовой команды нет. Проверьте имя, прежде чем выполнять git push.",
     commitPushNoBranch: "Коммит не входит ни в одну локальную ветку (возможно, detached HEAD) — ветку для git push укажите вручную.",
     commitPushedTitle: (b) => `Отправлен в удалённый репозиторий (${b})`,
     commitPushedDesc: "Коммит входит в refs origin/* по данным последнего fetch; сам сервер не проверялся.",
@@ -3861,6 +3862,7 @@ const I18N = {
     commitUnpushedDesc: "This commit exists only in the local git repository on this machine. The server does not have it yet, so the link returns 404 Not Found.",
     commitPushHint: "To push the commit, run:",
     commitPushManyBranches: "The commit is in several local branches - pick the one to git push.",
+    commitPushUnsafeBranch: "The branch name has characters a terminal could act on, so no ready command is offered. Check the name before you git push.",
     commitPushNoBranch: "The commit is in no local branch (detached HEAD?) - name the branch for git push yourself.",
     commitPushedTitle: (b) => `Pushed to the remote (${b})`,
     commitPushedDesc: "The commit is in origin/* refs as of the last fetch; the server itself was not contacted.",
@@ -4008,6 +4010,7 @@ const I18N = {
     commitUnpushedDesc: "이 커밋은 이 컴퓨터의 로컬 Git 저장소에만 있습니다. 서버에 아직 없으므로 링크는 404 Not Found를 반환합니다.",
     commitPushHint: "커밋을 푸시하려면 실행:",
     commitPushManyBranches: "커밋이 여러 로컬 브랜치에 있습니다 — git push할 브랜치를 지정하세요.",
+    commitPushUnsafeBranch: "브랜치 이름에 터미널에서 위험할 수 있는 문자가 있어 명령을 제공하지 않습니다. git push 전에 이름을 확인하세요.",
     commitPushNoBranch: "커밋이 로컬 브랜치에 없습니다 (detached HEAD?) — git push할 브랜치를 직접 지정하세요.",
     commitPushedTitle: (b) => `원격 저장소에 푸시됨 (${b})`,
     commitPushedDesc: "마지막 fetch 시점 기준으로 origin/* refs에 있습니다. 서버 자체는 확인하지 않았습니다.",
@@ -4136,6 +4139,7 @@ const I18N = {
     commitUnpushedDesc: "このコミットはこのPCのローカルGitリポジトリにしか存在しません。サーバーにはまだないため、リンクは404 Not Foundを返します。",
     commitPushHint: "コミットをpushするには次を実行:",
     commitPushManyBranches: "コミットが複数のローカルブランチに含まれます — git pushするブランチを選んでください。",
+    commitPushUnsafeBranch: "ブランチ名にターミナルで危険な文字が含まれるため、コマンドは表示しません。git pushの前に名前を確認してください。",
     commitPushNoBranch: "コミットがどのローカルブランチにもありません（detached HEAD?）— git pushするブランチを手動で指定してください。",
     commitPushedTitle: (b) => `リモートにpush済み (${b})`,
     commitPushedDesc: "最後のfetchの時点でorigin/*のrefsに含まれます。サーバー自体は確認していません。",
@@ -4264,6 +4268,7 @@ const I18N = {
     commitUnpushedDesc: "该提交只存在于本机的本地 Git 仓库中。服务器上还没有它，因此链接返回 404 Not Found。",
     commitPushHint: "要推送该提交，请执行:",
     commitPushManyBranches: "该提交同时在多个本地分支中 — 请指定要 git push 的分支。",
+    commitPushUnsafeBranch: "分支名称包含对终端有风险的字符，因此不提供现成命令。执行 git push 前请检查名称。",
     commitPushNoBranch: "该提交不在任何本地分支中（可能是 detached HEAD）— 请自行指定 git push 的分支。",
     commitPushedTitle: (b) => `已推送到远程 (${b})`,
     commitPushedDesc: "按最近一次 fetch 的数据，该提交在 origin/* 中；未实际向服务器验证。",
@@ -9933,9 +9938,9 @@ function commitStatusCard(data) {
     card.append(top, desc);
 
     const box = el("div", "status-action-box");
-    box.appendChild(el("div", "action-box-title", L.commitPushHint));
     const cmd = el("div", "cmd-box");
     if (data.push_branch) {
+      box.appendChild(el("div", "action-box-title", L.commitPushHint));
       const line = `git push origin ${data.push_branch}`;
       cmd.appendChild(el("code", null, line));
       cmd.appendChild(commitCopyBtn(line, L.commitCmdCopied));
@@ -9945,7 +9950,9 @@ function commitStatusCard(data) {
       cmd.appendChild(el("code", null, branches || "git push origin <branch>"));
       box.appendChild(cmd);
       card.appendChild(box);
-      card.appendChild(el("div", "status-desc", branches ? L.commitPushManyBranches : L.commitPushNoBranch));
+      const held = (data.local_branches || []).length;
+      const why = held === 0 ? L.commitPushNoBranch : held === 1 ? L.commitPushUnsafeBranch : L.commitPushManyBranches;
+      card.appendChild(el("div", "status-desc", why));
       return card;
     }
     box.appendChild(cmd);

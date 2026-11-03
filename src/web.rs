@@ -988,6 +988,17 @@ fn git_cmd(repo: &Path) -> std::process::Command {
     cmd
 }
 
+/// Whether a branch name can go into a command the user pastes into a shell.
+/// The author of a cloned repository picks the name, and git allows `;`, `$(`
+/// and a leading `+` (a forced push) in it. Quoting differs between sh,
+/// PowerShell and cmd, so a name needing quotes gets no ready command.
+fn is_shell_safe_branch(name: &str) -> bool {
+    !name.starts_with('-')
+        && name
+            .chars()
+            .all(|c| c.is_alphanumeric() || matches!(c, '.' | '_' | '/' | '-'))
+}
+
 pub fn inspect_git_commit(repo: &Path, sha: &str) -> Option<serde_json::Value> {
     let clean = sha.trim();
     let full_sha_out = git_cmd(repo)
@@ -1075,7 +1086,7 @@ pub fn inspect_git_commit(repo: &Path, sha: &str) -> Option<serde_json::Value> {
     let local_branches = ref_names("refs/heads/");
     let push_branch = local_branches
         .first()
-        .filter(|_| local_branches.len() == 1)
+        .filter(|name| local_branches.len() == 1 && is_shell_safe_branch(name))
         .cloned();
 
     let stat_out = git_cmd(repo)
@@ -2198,8 +2209,8 @@ fn api_backup_restore(
 #[cfg(test)]
 mod tests {
     use super::{
-        detect_git_remote_and_branch, host_matches, inspect_git_commit, origin_ok,
-        should_open_browser,
+        detect_git_remote_and_branch, host_matches, inspect_git_commit, is_shell_safe_branch,
+        origin_ok, should_open_browser,
     };
     use serde_json::json;
     use std::path::{Path, PathBuf};
@@ -2448,6 +2459,30 @@ mod tests {
             "no branch holds the commit"
         );
         drop(tmp);
+    }
+
+    #[test]
+    fn no_push_command_for_a_branch_name_a_shell_would_run() {
+        let (tmp, repo) = scratch_repo();
+        commit_file(&repo, "a.txt", "one", "add a");
+        let hostile = "x');echo${IFS}pwned;";
+        git_in(&repo, &["checkout", "-q", "-b", hostile]);
+        commit_file(&repo, "b.txt", "two", "add b");
+
+        let info = inspect_git_commit(&repo, &head_sha(&repo)).unwrap();
+        assert_eq!(info["push_branch"], serde_json::Value::Null);
+        assert_eq!(info["local_branches"], json!([hostile]));
+        drop(tmp);
+    }
+
+    #[test]
+    fn shell_safe_branch_names() {
+        for name in ["main", "feature/fix-1.2_b", "ветка/правка"] {
+            assert!(is_shell_safe_branch(name), "{name}");
+        }
+        for name in ["a;b", "$(x)", "+main", "-f", "a'b", "a`b", "a&b", "a#b"] {
+            assert!(!is_shell_safe_branch(name), "{name}");
+        }
     }
 
     #[test]

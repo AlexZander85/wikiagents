@@ -3735,12 +3735,12 @@ fn resolve_by_native_id(conn: &Connection, prefix: &str) -> Result<Vec<SessionRo
     let mut out: Vec<SessionRow> = Vec::new();
     for row in rows {
         let row = row?;
-        if native_id_of(&row.path).is_some_and(|n| n.starts_with(&want)) {
-            if out.iter().all(|r| r.session_id != row.session_id) {
-                out.push(row);
-                if out.len() >= 10 {
-                    break;
-                }
+        if native_id_of(&row.path).is_some_and(|n| n.starts_with(&want))
+            && out.iter().all(|r| r.session_id != row.session_id)
+        {
+            out.push(row);
+            if out.len() >= 10 {
+                break;
             }
         }
     }

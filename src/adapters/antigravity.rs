@@ -6,6 +6,7 @@ use crate::model::{EditEvent, EditKind, Message, Role, Session, ToolCall, ToolRe
 use crate::util::short_id;
 use anyhow::Result;
 use serde_json::{json, Value};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 #[derive(Clone, Debug)]
@@ -165,6 +166,64 @@ fn conversation_transcript(conv: &Path) -> Option<PathBuf> {
     None
 }
 
+/// The file to read for `path`, and the compact log beside it to fill gaps from.
+/// `transcript_full.jsonl` keeps long text whole, and `transcript.jsonl` may
+/// still hold steps the full log has already dropped from its start.
+fn transcript_files(path: &Path) -> (PathBuf, Option<PathBuf>) {
+    let full = path.with_file_name("transcript_full.jsonl");
+    if !full.is_file() {
+        return (path.to_path_buf(), None);
+    }
+    let compact = path.with_file_name("transcript.jsonl");
+    (full, compact.is_file().then_some(compact))
+}
+
+fn is_conversation_step(line: &str) -> bool {
+    line.contains("\"type\":\"USER_INPUT\"") || line.contains("\"type\":\"PLANNER_RESPONSE\"")
+}
+
+fn step_index(line: &str) -> Option<i64> {
+    serde_json::from_str::<Value>(line)
+        .ok()?
+        .get("step_index")?
+        .as_i64()
+}
+
+/// `full` with the steps only `compact` has. A step in both stays as `full` has
+/// it. `step_index` can run backwards within a log, so nothing is sorted by it:
+/// a missing step goes before the next step of `compact` that `full` also has,
+/// and steps after the last such step go at the end.
+fn merge_steps(full: Vec<String>, compact: Vec<String>) -> Vec<String> {
+    let mut position: HashMap<i64, usize> = HashMap::new();
+    for (i, line) in full.iter().enumerate() {
+        if let Some(index) = step_index(line) {
+            position.entry(index).or_insert(i);
+        }
+    }
+
+    let mut before: HashMap<usize, Vec<String>> = HashMap::new();
+    let mut pending: Vec<String> = Vec::new();
+    for line in compact {
+        let Some(index) = step_index(&line) else {
+            continue;
+        };
+        match position.get(&index) {
+            Some(&i) => before.entry(i).or_default().append(&mut pending),
+            None => pending.push(line),
+        }
+    }
+
+    let mut merged = Vec::with_capacity(full.len() + pending.len());
+    for (i, line) in full.into_iter().enumerate() {
+        if let Some(steps) = before.remove(&i) {
+            merged.extend(steps);
+        }
+        merged.push(line);
+    }
+    merged.extend(pending);
+    merged
+}
+
 fn conversation_id(path: &Path) -> Option<String> {
     let mut current = path.parent()?;
     if current.file_name().is_some_and(|n| n == "logs") {
@@ -241,24 +300,16 @@ impl Adapter for Antigravity {
     }
 
     fn parse(&self, path: &Path) -> Result<Session> {
-        let full_target;
-        let effective_path =
-            if path.file_name().and_then(|n| n.to_str()) == Some("transcript.jsonl") {
-                let full = path.with_file_name("transcript_full.jsonl");
-                if full.is_file() {
-                    full_target = full;
-                    &full_target
-                } else {
-                    path
-                }
-            } else {
-                path
-            };
-
-        let (lines, _windowed) = crate::util::session_lines_keeping(effective_path, |line| {
-            line.contains("\"type\":\"USER_INPUT\"")
-                || line.contains("\"type\":\"PLANNER_RESPONSE\"")
-        })?;
+        let (source, compact) = transcript_files(path);
+        let (mut lines, _windowed) =
+            crate::util::session_lines_keeping(&source, is_conversation_step)?;
+        // The full log is already read: an unreadable compact one costs only
+        // the steps it alone holds, not the session.
+        if let Some(Ok((compact_lines, _))) =
+            compact.map(|p| crate::util::session_lines_keeping(&p, is_conversation_step))
+        {
+            lines = merge_steps(lines, compact_lines);
+        }
 
         let mut messages: Vec<Message> = Vec::new();
         let mut touched: Vec<String> = Vec::new();
@@ -389,7 +440,7 @@ impl Adapter for Antigravity {
         Ok(Session {
             id: cid,
             tool: "antigravity",
-            path: path.to_path_buf(),
+            path: source,
             project: project.unwrap_or_else(|| "antigravity".to_string()),
             started,
             ended,
@@ -527,6 +578,125 @@ mod tests {
         assert_eq!(
             chosen, full_path,
             "transcript_full.jsonl must be chosen over transcript.jsonl"
+        );
+    }
+
+    fn step(index: i64, kind: &str, content: &str) -> String {
+        json!({
+            "step_index": index,
+            "type": kind,
+            "created_at": "2026-10-24T12:00:00.000Z",
+            "content": content,
+        })
+        .to_string()
+    }
+
+    fn write_logs(
+        root: &Path,
+        id: &str,
+        compact: &[String],
+        full: &[String],
+    ) -> (PathBuf, PathBuf) {
+        let logs = root
+            .join(".gemini")
+            .join("antigravity")
+            .join("brain")
+            .join(id)
+            .join(".system_generated")
+            .join("logs");
+        std::fs::create_dir_all(&logs).unwrap();
+        let compact_path = logs.join("transcript.jsonl");
+        let full_path = logs.join("transcript_full.jsonl");
+        std::fs::write(&compact_path, compact.join("\n")).unwrap();
+        std::fs::write(&full_path, full.join("\n")).unwrap();
+        (compact_path, full_path)
+    }
+
+    fn texts(session: &Session) -> Vec<&str> {
+        session.messages.iter().map(|m| m.text.as_str()).collect()
+    }
+
+    /// Antigravity drops old steps from each log on its own schedule, so the
+    /// full log can start long after the compact one. Reading only the full log
+    /// lost 26 of 30 user messages in a real conversation.
+    #[test]
+    fn steps_only_the_compact_log_has_are_kept() {
+        let temp = tempfile::tempdir().unwrap();
+        let compact = [
+            step(1, "USER_INPUT", "first question"),
+            step(2, "PLANNER_RESPONSE", "first answer"),
+            step(3, "USER_INPUT", "second question"),
+            step(4, "PLANNER_RESPONSE", "cut <truncated 500 bytes>"),
+        ];
+        let full = [
+            step(3, "USER_INPUT", "second question"),
+            step(4, "PLANNER_RESPONSE", "second answer, whole"),
+        ];
+        let (compact_path, full_path) = write_logs(temp.path(), "conv", &compact, &full);
+        let adapter = Antigravity::in_home(temp.path());
+        assert_eq!(adapter.discover().files, std::slice::from_ref(&full_path));
+
+        let want = [
+            "first question",
+            "first answer",
+            "second question",
+            "second answer, whole",
+        ];
+        let session = adapter.parse(&full_path).unwrap();
+        assert_eq!(texts(&session), want);
+        assert_eq!(session.path, full_path);
+
+        // A row still naming the compact log reads the same conversation.
+        let session = adapter.parse(&compact_path).unwrap();
+        assert_eq!(texts(&session), want);
+        assert_eq!(session.path, full_path);
+    }
+
+    /// The other way round as well: the compact log may start later, and the
+    /// full log alone then has the opening of the conversation.
+    #[test]
+    fn steps_only_the_full_log_has_are_kept() {
+        let temp = tempfile::tempdir().unwrap();
+        let compact = [step(3, "USER_INPUT", "later")];
+        let full = [
+            step(1, "USER_INPUT", "opening"),
+            step(3, "USER_INPUT", "later"),
+        ];
+        let (_, full_path) = write_logs(temp.path(), "conv", &compact, &full);
+        let session = Antigravity::in_home(temp.path()).parse(&full_path).unwrap();
+        assert_eq!(texts(&session), ["opening", "later"]);
+    }
+
+    /// `step_index` runs backwards in real logs, so sorting by it would reorder
+    /// a conversation. Steps stay where each log puts them, repeats included.
+    #[test]
+    fn merging_keeps_the_order_of_the_logs() {
+        let line = |index, text| step(index, "USER_INPUT", text);
+        let merged = merge_steps(
+            vec![line(9, "nine"), line(5, "five"), line(5, "five again")],
+            vec![
+                line(7, "seven"),
+                line(9, "nine"),
+                line(4, "four"),
+                line(5, "five"),
+                line(2, "two"),
+                "not json".to_string(),
+            ],
+        );
+        let order: Vec<String> = merged
+            .iter()
+            .map(|l| serde_json::from_str::<Value>(l).unwrap()["content"].to_string())
+            .collect();
+        assert_eq!(
+            order,
+            [
+                "\"seven\"",
+                "\"nine\"",
+                "\"four\"",
+                "\"five\"",
+                "\"five again\"",
+                "\"two\""
+            ]
         );
     }
 }

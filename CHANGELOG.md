@@ -14,9 +14,12 @@
   characters now gets a 400 instead of being matched as a `LIKE` template, where `%`
   would have returned some other commit's message. A recorded message is read for the
   session that made the commit, and a non-ASCII paste no longer returns a 500.
+- **The push hint no longer offers a command a branch name could hijack**: a branch
+  called `x;curl${IFS}…` ended up in a line meant for pasting into a terminal. A name
+  with anything but letters, digits, `.`, `_`, `/` and `-` now gets no ready command.
 
 ### Fixed
-- **Antigravity transcripts prefer `transcript_full.jsonl`**: previously preferred compact `transcript.jsonl`, which truncates long assistant replies, tables, and Mermaid diagrams with `<truncated N bytes>` placeholders. Now imports the complete, untruncated transcript without loss.
+- **Antigravity transcripts are read from both logs**: `transcript.jsonl` cuts long replies, tables and Mermaid diagrams to `<truncated N bytes>` placeholders, so `transcript_full.jsonl` is read first; but the full log can start much later, and on its own it lost most of a long conversation. Steps only the compact log has are now kept in their place. Text Antigravity truncated in both logs stays truncated.
 - **«Отправлен» means sent to `origin`**: a commit was called pushed when *any* remote
   held it, so a fork's `upstream` claimed a push that never happened; the other remotes
   are now listed separately, and the text says the answer comes from the last `fetch`

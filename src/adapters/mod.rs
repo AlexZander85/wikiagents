@@ -245,9 +245,9 @@ pub fn tool_names() -> Vec<&'static str> {
 /// Add a line here to re-parse ONE tool after a parser fix; everything not
 /// listed sits at the current version.
 const READER_OVERRIDES: &[(&str, i64)] = &[
-    // 4: prefer `transcript_full.jsonl` over `transcript.jsonl` so untruncated
-    // text, complete tables, and diagrams are preserved.
-    ("antigravity", 4),
+    // 5: read `transcript_full.jsonl` for untruncated text, and take from
+    // `transcript.jsonl` the steps the full log has already dropped.
+    ("antigravity", 5),
     // 4: the web adapters now take a chat's id from the chat itself instead of
     // from the export file, and keep the model's thinking blocks. Only these
     // tools need their sessions read again.
