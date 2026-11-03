@@ -13,6 +13,7 @@ mod gptme;
 pub mod harness;
 mod hermes;
 mod kimi;
+mod md_chat;
 mod opencode;
 mod prodex;
 mod qoder;
@@ -183,6 +184,9 @@ pub fn all() -> Vec<Box<dyn Adapter>> {
         Box::new(freebuff::Freebuff),
         Box::new(free_pi::FreePiCli),
         Box::new(free_pi::Pi),
+    ];
+
+    let json_exports: Vec<Box<dyn Adapter>> = vec![
         Box::new(web_chat::ClaudeWeb::default()),
         Box::new(web_chat::DeepSeekWeb::default()),
         Box::new(web_chat::GeminiWeb::default()),
@@ -190,6 +194,12 @@ pub fn all() -> Vec<Box<dyn Adapter>> {
         Box::new(web_chat::GlmWeb::default()),
         Box::new(web_chat::GptWeb::default()),
     ];
+    for json in json_exports {
+        adapters.push(Box::new(md_chat::WebSource::with_exports(json)));
+    }
+    for tool in md_chat::MARKDOWN_ONLY_TOOLS {
+        adapters.push(Box::new(md_chat::WebSource::markdown_only(tool)));
+    }
 
     if let Some(home) = crate::util::home_dir() {
         let accounts_dir = home.join(".claude-accounts");

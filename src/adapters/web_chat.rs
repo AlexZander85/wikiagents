@@ -11,17 +11,17 @@ use walkdir::WalkDir;
 
 const KEY_SEP: char = '\u{1f}';
 
-fn make_key(path: &Path, id: &str) -> String {
+pub(crate) fn make_key(path: &Path, id: &str) -> String {
     format!("{}{KEY_SEP}{id}", path.display())
 }
 
-fn display_path(key: &str) -> String {
+pub(crate) fn display_path(key: &str) -> String {
     key.replace(KEY_SEP, "#")
 }
 
 /// A web chat's own id, not the file it happens to be exported into: re-export
 /// the same chats next month and they are still the same session.
-fn web_session_id(tool: &str, native: &str) -> String {
+pub(crate) fn web_session_id(tool: &str, native: &str) -> String {
     short_id(&format!("{tool}:{native}"))
 }
 
@@ -156,7 +156,7 @@ impl StoreKeys {
     }
 }
 
-fn file_mtime_ms(path: &Path) -> i64 {
+pub(crate) fn file_mtime_ms(path: &Path) -> i64 {
     std::fs::metadata(path)
         .and_then(|m| m.modified())
         .ok()

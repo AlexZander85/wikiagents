@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.4.3] - 2026-11-03 (WikiAgents)
+
+### Added
+- **Web chats saved as Markdown**: `.md` files in a `web_session` folder are indexed next to the JSON exports and re-read when they change. The source comes from the file name: `qwen`, `gpt`, `claude`, `glm`, `gemini`, `deepseek`, `arena`, `minimax`, `grok`, `kimi`, `muse`, the earliest in the name winning; a name with none of them goes to `other-web`. New sources: `arena-web`, `minimax-web`, `grok-web`, `kimi-web`, `muse-web`, `other-web`.
+- Turns are split on AI Exporter's `# you asked` / `# <vendor> response` markers or on speaker labels (`## User`, `**You said:**`). A file with neither stays whole as one assistant message, so it is searchable but nothing is guessed about who said what.
+- A chat's id comes from the URL in the file when there is one (`> From:` or front matter `source:`), so saving it again replaces the old copy instead of adding a second session, and a JSON export of the same chat merges with it: the file that changed last wins, a tie goes to the JSON.
+
 ## [1.4.2] - 2026-11-03 (WikiAgents)
 
 ### Security
@@ -756,7 +763,7 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 semantic versioning once it reaches 1.0.
 
-## [Unreleased]
+## [1.4.3] - 2026-11-03 (WikiAgents)
 
 ## [0.34.10] - 2026-10-24
 
