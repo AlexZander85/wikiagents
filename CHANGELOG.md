@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [1.4.2] - 2026-11-03 (WikiAgents)
 
 ### Security
 - **The commit inspector can no longer run code from a branch or remote name**: the
