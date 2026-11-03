@@ -2402,6 +2402,19 @@ fn archive_or_prune(
     } else {
         std::collections::HashMap::new()
     };
+    // A session live at another path is not deleted: neither its old archived
+    // row nor its durable copy should outlive the move, and a stale copy would
+    // replace the live session at the next rehydrate.
+    conn.execute(
+        "DELETE FROM archive WHERE tool = ?1 AND session_id IN
+         (SELECT session_id FROM files WHERE tool = ?1 AND archived_at IS NULL)",
+        params![tool],
+    )?;
+    conn.execute(
+        "DELETE FROM files WHERE tool = ?1 AND archived_at IS NOT NULL AND session_id IN
+         (SELECT session_id FROM files WHERE tool = ?1 AND archived_at IS NULL)",
+        params![tool],
+    )?;
     let live: Vec<(String, String)> = all_live.into_iter().filter(|(p, _)| in_scope(p)).collect();
     let gone: Vec<(String, String)> = live
         .into_iter()
@@ -2482,11 +2495,6 @@ fn archive_or_prune(
             archived += 1;
         }
     }
-    // Prune any lingering archived rows whose session is now live at another path.
-    conn.execute(
-        "DELETE FROM files WHERE archived_at IS NOT NULL AND session_id IN (SELECT session_id FROM files WHERE archived_at IS NULL)",
-        [],
-    )?;
     Ok(archived)
 }
 
@@ -6060,6 +6068,31 @@ mod edits_tests {
             "{}\u{1f}chat-1",
             dir.path().join("claude-2026-01.json").display()
         );
+
+        // Pruning a session that moved stays within the tool being reconciled.
+        let c = Connection::open_in_memory().unwrap();
+        create_cache_schema(&c).unwrap();
+        for (path, tool, archived_at) in [
+            ("/new", "tool-a", None),
+            ("/old", "tool-a", Some("2026-01-01")),
+            ("/other", "tool-b", Some("2026-01-01")),
+        ] {
+            c.execute(
+                "INSERT INTO files (path, mtime, size, session_id, tool, project, title, msg_count, kind, archived_at)
+                 VALUES (?1, 0, 0, 'moved', ?2, 'p', 't', 1, 'main', ?3)",
+                params![path, tool, archived_at],
+            )
+            .unwrap();
+        }
+        archive_or_prune(&c, "tool-a", &["/new".to_string()], true, None).unwrap();
+        let paths: Vec<String> = c
+            .prepare("SELECT path FROM files ORDER BY path")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        assert_eq!(paths, ["/new", "/other"]);
 
         let mut c = Connection::open_in_memory().unwrap();
         create_cache_schema(&c).unwrap();

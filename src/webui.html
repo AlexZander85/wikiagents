@@ -6225,7 +6225,7 @@ function renderCurrentSession(keepScroll) {
         e.stopPropagation();
         // Copying lives in the dialog: overwriting the clipboard on a click that
         // mainly opens details loses whatever the user copied last.
-        openCommitModal(c.sha, s.project, s.git_remote, c.message, s.git_branch);
+        openCommitModal(c.sha, s.project, s.git_remote, c.message, s.git_branch, s.id);
       };
       commitRow.appendChild(commitChip);
 
@@ -6233,7 +6233,7 @@ function renderCurrentSession(keepScroll) {
         const msgSpan = el("span", "commit-msg", c.message);
         msgSpan.title = `${c.message} (${L.commitOpenDetails})`;
         msgSpan.style.cursor = "pointer";
-        msgSpan.onclick = () => openCommitModal(c.sha, s.project, s.git_remote, c.message, s.git_branch);
+        msgSpan.onclick = () => openCommitModal(c.sha, s.project, s.git_remote, c.message, s.git_branch, s.id);
         commitRow.appendChild(msgSpan);
       }
 
@@ -9971,7 +9971,7 @@ function commitStatusCard(data) {
   return card;
 }
 
-function openCommitModal(sha, project, gitRemote, message, branch) {
+function openCommitModal(sha, project, gitRemote, message, branch, sessionId) {
   const overlay = document.getElementById("commit-modal-overlay");
   if (!overlay) return;
   overlay.style.display = "flex";
@@ -9994,6 +9994,7 @@ function openCommitModal(sha, project, gitRemote, message, branch) {
 
   const params = new URLSearchParams({ sha: sha });
   if (project) params.append("project", project);
+  if (sessionId) params.append("session_id", sessionId);
   jget(`/api/git/commit?${params.toString()}`, 15000)
     .then((data) => renderCommitModalContent(data, sha, gitRemote, message, branch))
     .catch(() => renderCommitModalContent(
