@@ -1,3 +1,4 @@
+use crate::file_links::FileLocator;
 use crate::model::Role;
 use crate::{commands, index, resume};
 use anyhow::{Context, Result};
@@ -213,6 +214,8 @@ fn handle_request(
         "/api/search" => api_search(conn, query),
         "/api/trace" => api_trace(conn, query),
         "/api/file" => api_file(conn, query),
+        "/api/file_links" => api_file_links(conn, &mut request),
+        "/api/reveal" => api_reveal(conn, &mut request),
         "/api/projects" => api_projects(conn, query),
         "/api/short_hidden" => api_short_hidden(conn, query),
         "/api/tag" => api_tag(conn, query),
@@ -274,9 +277,11 @@ const POST_ONLY_PATHS: &[&str] = &[
     "/api/backup/restore",
     "/api/backup/run",
     "/api/backup/squash",
+    "/api/file_links",
     "/api/forget",
     "/api/memory/approve",
     "/api/memory/reject",
+    "/api/reveal",
     "/api/snippet/delete",
     "/api/snippet/rename",
     "/api/snippet/save",
@@ -962,7 +967,7 @@ pub fn find_git_root(path: &Path) -> Option<PathBuf> {
     locate_git_repo(path).map(|(root, _)| root)
 }
 
-fn git_cmd(repo: &Path) -> std::process::Command {
+pub(crate) fn git_cmd(repo: &Path) -> std::process::Command {
     let mut cmd = std::process::Command::new("git");
     cmd.current_dir(repo);
     for (k, _) in std::env::vars() {
@@ -1217,6 +1222,57 @@ fn api_git_commit(conn: &Connection, query: &str) -> Result<Boxed> {
         "short_sha": clean_sha.chars().take(7).collect::<String>(),
         "message": db_message,
     }))
+}
+
+/// Most paths one request may ask about; the UI splits larger batches.
+const MAX_FILE_LINKS: usize = 500;
+
+/// The session whose folder relative paths in a request are relative to.
+fn locator_for_request(conn: &Connection, body: &serde_json::Value) -> Result<FileLocator> {
+    let id = body
+        .get("session_id")
+        .and_then(|v| v.as_str())
+        .context("missing session_id")?;
+    let rows = index::resolve(conn, id)?;
+    let row = rows.first().context("session not found")?;
+    Ok(FileLocator::for_project(&row.project))
+}
+
+/// Where each path a transcript mentions really is. A POST only because the list
+/// does not fit a URL; it changes nothing.
+fn api_file_links(conn: &Connection, req: &mut tiny_http::Request) -> Result<Boxed> {
+    let mut body = String::new();
+    req.as_reader().read_to_string(&mut body)?;
+    let body: serde_json::Value = serde_json::from_str(&body).context("invalid JSON")?;
+    let locator = locator_for_request(conn, &body)?;
+    let links: Vec<_> = body
+        .get("paths")
+        .and_then(|v| v.as_array())
+        .context("missing paths")?
+        .iter()
+        .filter_map(|path| path.as_str())
+        .take(MAX_FILE_LINKS)
+        .map(|path| locator.locate(path))
+        .collect();
+    json_response(json!({ "links": links }))
+}
+
+/// Show one file in the system's file manager.
+fn api_reveal(conn: &Connection, req: &mut tiny_http::Request) -> Result<Boxed> {
+    let mut body = String::new();
+    req.as_reader().read_to_string(&mut body)?;
+    let body: serde_json::Value = serde_json::from_str(&body).context("invalid JSON")?;
+    let path = body
+        .get("path")
+        .and_then(|v| v.as_str())
+        .context("missing path")?;
+    let locator = locator_for_request(conn, &body)?;
+    // Checked again here, because the file can go between render and click.
+    let Some(found) = locator.existing(path) else {
+        return json_response(json!({ "ok": false, "reason": "missing" }));
+    };
+    crate::file_links::reveal(&found).context("open the file manager")?;
+    json_response(json!({ "ok": true }))
 }
 
 /// Detect git remote web URL (GitHub, GitLab, Bitbucket) and branch from a repository directory

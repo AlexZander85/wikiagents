@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+- **No more GitHub links to files that were never pushed**: a file path in a transcript used to get a GitHub link without any check. The server now looks in `origin`'s tree (as of the last `fetch`) and on disk: a file on the remote links there, a file only on this machine is shown in Explorer on click, and a path found nowhere stays plain text. It works for absolute paths, Cyrillic names and `file.rs:42` links too, and a session started in a subfolder now gets the right repository path.
+- **Showing a file never runs it**, and network paths (`\\host\share`) from a transcript are never touched, because merely checking one sends the user's credentials to that host.
+
 ## [1.4.3] - 2026-11-03 (WikiAgents)
 
 ### Added

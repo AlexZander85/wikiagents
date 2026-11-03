@@ -912,6 +912,14 @@
     text-decoration: underline;
     color: var(--accent);
   }
+  .file-local-link {
+    color: var(--accent);
+    text-decoration: underline dotted;
+    text-underline-offset: 2px;
+    cursor: pointer;
+  }
+  .file-local-link code { color: inherit; }
+  .file-unverified-link { opacity: 0.75; }
   .file-editor-btn {
     display: inline-flex;
     align-items: center;
@@ -3806,6 +3814,7 @@ const I18N = {
     searchSnippets: "Поиск по сохранённым сниппетам...",
     pinSnippet: "📌 Сохранить в сниппеты / базу знаний", unpinSnippet: "Удалить из сниппетов",
     pinnedSnippet: "В сниппетах", pinSnippetBtn: "Сниппет",
+    revealFile: "Показать в Проводнике", fileNotFound: "Файл не найден", fileGone: "Файла больше нет на диске", fileUnverified: "Не удалось проверить, есть ли файл на сервере", revealFailed: "Не удалось открыть Проводник",
     snippetPinnedToast: "📌 Сниппет сохранён в базу знаний",
     snippetUnpinnedToast: "Сниппет удалён из базы знаний",
     noSnippets: "Закладок пока нет.",
@@ -3957,6 +3966,7 @@ const I18N = {
     unpinSnippet: "Unpin snippet",
     pinnedSnippet: "Pinned",
     pinSnippetBtn: "Pin",
+    revealFile: "Show in file manager", fileNotFound: "File not found", fileGone: "The file is no longer on disk", fileUnverified: "Could not check whether the file is on the server", revealFailed: "Could not open the file manager",
     snippetPinnedToast: "📌 Snippet saved to Knowledge Base",
     snippetUnpinnedToast: "Snippet removed from Knowledge Base",
     noSnippets: "No pinned snippets yet.",
@@ -4086,6 +4096,7 @@ const I18N = {
     searchSnippets: "고정된 스니펫 검색...",
     pinSnippet: "지식 베이스에 스니펫 고정", unpinSnippet: "스니펫 고정 해제",
     pinnedSnippet: "고정됨", pinSnippetBtn: "고정",
+    revealFile: "파일 관리자에서 보기", fileNotFound: "파일을 찾을 수 없음", fileGone: "파일이 더 이상 디스크에 없습니다", fileUnverified: "파일이 서버에 있는지 확인할 수 없습니다", revealFailed: "파일 관리자를 열 수 없습니다",
     snippetPinnedToast: "📌 스니펫이 지식 베이스에 저장되었습니다",
     snippetUnpinnedToast: "스니펫이 지식 베이스에서 삭제되었습니다",
     noSnippets: "고정된 스니펫이 없습니다.",
@@ -4215,6 +4226,7 @@ const I18N = {
     searchSnippets: "固定されたスニペットを検索...",
     pinSnippet: "ナレッジベースにスニペットを保存", unpinSnippet: "スニペットの保存を解除",
     pinnedSnippet: "固定済み", pinSnippetBtn: "固定",
+    revealFile: "ファイルマネージャーで表示", fileNotFound: "ファイルが見つかりません", fileGone: "ファイルはディスク上にありません", fileUnverified: "サーバー上のファイルを確認できませんでした", revealFailed: "ファイルマネージャーを開けませんでした",
     snippetPinnedToast: "📌 スニペットをナレッジベースに保存しました",
     snippetUnpinnedToast: "スニペットをナレッジベースから削除しました",
     noSnippets: "固定されたスニペットはありません。",
@@ -4344,6 +4356,7 @@ const I18N = {
     searchSnippets: "搜索收藏的代码片段...",
     pinSnippet: "收藏代码片段到知识库", unpinSnippet: "取消收藏代码片段",
     pinnedSnippet: "已收藏", pinSnippetBtn: "收藏",
+    revealFile: "在文件管理器中显示", fileNotFound: "未找到文件", fileGone: "文件已不在磁盘上", fileUnverified: "无法确认文件是否在服务器上", revealFailed: "无法打开文件管理器",
     snippetPinnedToast: "📌 代码片段已保存至知识库",
     snippetUnpinnedToast: "代码片段已从知识库删除",
     noSnippets: "暂无收藏的代码片段。",
@@ -5129,112 +5142,194 @@ function gitWebTarget(gitRemote, gitBranch, relPath, lineStart, lineEnd) {
   return { url, label, fragment };
 }
 
-function linkifyFileReferences(container, s) {
-  if (!container || !s) return;
-  const gitRemote = s.git_remote;
-  const gitBranch = s.git_branch || "main";
-  const projectRoot = s.project_root || s.project || "";
+// Where a mentioned file really is comes from the server, which checks origin's
+// tree and the disk. Nothing is linked until it answers, so a path that exists
+// nowhere never looks clickable, and a failed request leaves plain text.
+const FILE_REF_BATCH_MS = 30;
+const FILE_REF_BATCH_SIZE = 500;
+const fileRefState = { sessionId: null, known: new Map(), waiting: new Map(), timer: null };
 
-  // 1. Process existing links: convert local file links or relative links to GitHub/GitLab
+function whenFileLocated(sessionId, path, apply) {
+  if (fileRefState.sessionId !== sessionId) {
+    fileRefState.sessionId = sessionId;
+    fileRefState.known = new Map();
+    fileRefState.waiting = new Map();
+  }
+  const known = fileRefState.known.get(path);
+  if (known) {
+    apply(known);
+    return;
+  }
+  const callbacks = fileRefState.waiting.get(path);
+  if (callbacks) {
+    callbacks.push(apply);
+  } else {
+    fileRefState.waiting.set(path, [apply]);
+  }
+  if (!fileRefState.timer) {
+    fileRefState.timer = setTimeout(flushFileRefs, FILE_REF_BATCH_MS);
+  }
+}
+
+async function flushFileRefs() {
+  fileRefState.timer = null;
+  const sessionId = fileRefState.sessionId;
+  const waiting = fileRefState.waiting;
+  const known = fileRefState.known;
+  fileRefState.waiting = new Map();
+  const paths = [...waiting.keys()];
+  for (let at = 0; at < paths.length; at += FILE_REF_BATCH_SIZE) {
+    const batch = paths.slice(at, at + FILE_REF_BATCH_SIZE);
+    let links;
+    try {
+      links = (await jpost("/api/file_links", { session_id: sessionId, paths: batch })).links;
+    } catch (_) {
+      continue;
+    }
+    for (const link of links || []) {
+      known.set(link.path, link);
+      for (const apply of waiting.get(link.path) || []) apply(link);
+    }
+  }
+}
+
+// `src/a.rs:40-52`, `src/a.rs#L40-L52`, or a bare path.
+function splitLineSuffix(text) {
+  const m = text.match(/^(.+?)(?::L?([0-9]+)(?:-L?([0-9]+))?|#L([0-9]+)(?:-L?([0-9]+))?)$/i);
+  if (!m) return { path: text, lineStart: null, lineEnd: null };
+  return { path: m[1], lineStart: m[2] || m[4] || null, lineEnd: m[3] || m[5] || null };
+}
+
+// Loose on purpose: a dotted word that is not a file comes back as missing and
+// stays plain text, so this only has to avoid sending prose to the server.
+const RELATIVE_FILE_REF = /^[^\n\r<>"|*?:]*[^\s.\/\\]\.[a-zA-Z0-9]{1,8}$/;
+const ABSOLUTE_FILE_REF = /^(?:[a-zA-Z]:[\\\/]|~[\\\/]|\/)[^\n\r<>"|*?]*$/;
+
+function makeFileLocal(link, sessionId, path, located) {
+  link.href = "#";
+  link.removeAttribute("target");
+  link.removeAttribute("rel");
+  link.classList.add("file-local-link");
+  link.title = `${L.revealFile || "Show in file manager"}: ${located.local_path}`;
+  link.addEventListener("click", async (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    try {
+      const answer = await jpost("/api/reveal", { session_id: sessionId, path });
+      if (!answer.ok) showToast(L.fileGone || "The file is no longer on disk");
+    } catch (_) {
+      showToast(L.revealFailed || "Could not open the file manager");
+    }
+  });
+}
+
+function makeFileRemote(link, s, located, lineStart, lineEnd, extraFragment) {
+  const branch = located.branch || s.git_branch || "main";
+  const target = gitWebTarget(s.git_remote, branch, located.repo_path, lineStart, lineEnd);
+  if (!target) return false;
+  link.href = `${target.url}${extraFragment || ""}`;
+  link.target = "_blank";
+  link.rel = "noopener noreferrer";
+  link.classList.add("file-web-link");
+  link.title = `Open on ${target.label} (${branch}): ${located.repo_path}`;
+  if (located.state === "unverified") {
+    link.classList.add("file-unverified-link");
+    link.title += ` - ${L.fileUnverified || "Could not check whether the file is on the server"}`;
+  }
+  return true;
+}
+
+function isOnHost(located, s) {
+  return (located.state === "remote" || located.state === "unverified") && !!s.git_remote && !!located.repo_path;
+}
+
+function linkifyFileReferences(container, s) {
+  if (!container || !s || !s.id) return;
+
+  // 1. Links the text already has: until the server answers, a link to a local
+  // path goes nowhere rather than to a page that does not exist.
   container.querySelectorAll("a").forEach((a) => {
     const href = a.getAttribute("href");
     if (!href) return;
-    if (href.startsWith("http://") || href.startsWith("https://") || href.startsWith("mailto:") || href.startsWith("#") || href.startsWith("vscode:") || href.startsWith("cursor:")) {
+    if (/^(?:https?:|mailto:|vscode:|cursor:|#)/i.test(href)) return;
+    let filePath = href;
+    let fragment = "";
+    const isFileUrl = /^file:\/\//i.test(filePath);
+    if (isFileUrl) filePath = filePath.replace(/^file:\/\/\/?/i, "");
+    // A scheme other than a one-letter drive (ChatGPT's `sandbox:`, `attachment:`)
+    // points at something this machine has never had.
+    if (!isFileUrl && /^[a-zA-Z][a-zA-Z0-9+.\-]+:/.test(filePath)) {
+      a.removeAttribute("href");
       return;
     }
-    let filePath = href;
-    let lineFrag = "";
-    if (filePath.includes("#")) {
-      const parts = filePath.split("#");
-      filePath = parts[0];
-      lineFrag = "#" + parts[1];
+    a.removeAttribute("href");
+    try {
+      filePath = decodeURIComponent(filePath);
+    } catch (_) {
+      // Not percent-encoded after all; the text is the path.
     }
-    if (filePath.startsWith("file:///")) {
-      filePath = decodeURIComponent(filePath.slice(8));
-      if (/^[a-zA-Z]:\//.test(filePath)) {
-        filePath = filePath.replace(/\//g, "\\");
+    if (isFileUrl && /^[a-zA-Z]:\//.test(filePath)) filePath = filePath.replace(/\//g, "\\");
+    const ref = splitLineSuffix(filePath);
+    let path = ref.path;
+    const hashAt = path.indexOf("#");
+    if (hashAt > 0) {
+      fragment = path.slice(hashAt);
+      path = path.slice(0, hashAt);
+    }
+    whenFileLocated(s.id, path, (located) => {
+      if (isOnHost(located, s)) {
+        makeFileRemote(a, s, located, ref.lineStart, ref.lineEnd, fragment);
+      } else if (located.state === "local") {
+        makeFileLocal(a, s.id, path, located);
+      } else {
+        a.title = L.fileNotFound || "File not found";
       }
-    }
-    let relPath = null;
-    if (projectRoot && filePath.toLowerCase().startsWith(projectRoot.toLowerCase())) {
-      relPath = filePath.slice(projectRoot.length).replace(/^[\\\/]/, "").replace(/\\/g, "/");
-    } else if (!/^[a-zA-Z]:\\/.test(filePath) && !filePath.startsWith("/")) {
-      relPath = filePath.replace(/\\/g, "/");
-    }
-    if (relPath && gitRemote) {
-      // The fragment is rebuilt for the host: a GitHub `#L10-L20` anchor means
-      // nothing to GitLab or Bitbucket. Anything that is not a line anchor
-      // (`#usage`) is left as the author wrote it.
-      const lines = lineFrag.match(/^#L?([0-9]+)(?:-L?([0-9]+))?$/i);
-      const target = lines
-        ? gitWebTarget(gitRemote, gitBranch, relPath, lines[1], lines[2])
-        : gitWebTarget(gitRemote, gitBranch, relPath, null, null);
-      if (target) {
-        a.href = lines ? target.url : `${target.url}${lineFrag}`;
-        a.target = "_blank";
-        a.rel = "noopener noreferrer";
-        a.classList.add("file-web-link");
-        a.title = `Open on ${target.label} (${gitBranch}): ${relPath}`;
-      }
-    }
+    });
   });
 
-  // 2. Scan inline code blocks: e.g. `src/auth.rs:40-52` or `src/web.rs#L120`
-  const FILE_REGEX = /^([a-zA-Z0-9_\.\-\/]+\.(?:rs|ts|js|jsx|tsx|py|go|c|cpp|h|hpp|java|kt|rb|php|html|css|scss|json|toml|yaml|yml|md|sql|sh|bash|ps1|bat|proto))(?::([0-9]+)(?:-([0-9]+))?|#L([0-9]+)(?:-L([0-9]+))?)?$/i;
+  // 2. Inline code: e.g. `src/auth.rs:40-52` or `D:\tmp\notes.md`
   container.querySelectorAll("code").forEach((codeEl) => {
-    if (codeEl.closest("pre") || codeEl.closest("a") || codeEl.parentElement?.classList.contains("file-link-wrap")) return;
-    const txt = codeEl.textContent.trim();
-    const m = txt.match(FILE_REGEX);
-    if (!m) return;
-    const relFile = m[1];
-    const lineStart = m[2] || m[4];
-    const lineEnd = m[3] || m[5];
+    if (codeEl.closest("pre") || codeEl.closest("a") || codeEl.dataset.fileRef) return;
+    const ref = splitLineSuffix(codeEl.textContent.trim());
+    if (!RELATIVE_FILE_REF.test(ref.path) && !ABSOLUTE_FILE_REF.test(ref.path)) return;
+    codeEl.dataset.fileRef = "1";
 
-    let lineHash = "";
-    if (lineStart && lineEnd) {
-      lineHash = `#L${lineStart}-L${lineEnd}`;
-    } else if (lineStart) {
-      lineHash = `#L${lineStart}`;
-    }
-
-    const normRel = relFile.replace(/\\/g, "/");
-    const target = gitWebTarget(gitRemote, gitBranch, normRel, lineStart, lineEnd);
-    const fullLocalPath = projectRoot ? (projectRoot.replace(/[\/\\]$/, "") + "/" + normRel) : normRel;
-    const editorLine = lineStart ? `:${lineStart}` : "";
-    const vscodeUrl = `vscode://file/${fullLocalPath}${editorLine}`;
-    const cursorUrl = `cursor://file/${fullLocalPath}${editorLine}`;
-
-    const wrapper = document.createElement("span");
-    wrapper.className = "file-link-wrap";
-
-    if (target) {
+    whenFileLocated(s.id, ref.path, (located) => {
+      if (!codeEl.isConnected) return;
+      const onHost = isOnHost(located, s);
+      if (!onHost && located.state !== "local") {
+        if (located.state === "missing") codeEl.title = L.fileNotFound || "File not found";
+        return;
+      }
+      const wrapper = document.createElement("span");
+      wrapper.className = "file-link-wrap";
       const link = document.createElement("a");
-      link.className = "file-web-link";
-      link.href = target.url;
-      link.target = "_blank";
-      link.rel = "noopener noreferrer";
-      link.title = `Open on ${target.label} (${gitBranch}): ${normRel}${lineHash}`;
+      if (onHost) {
+        makeFileRemote(link, s, located, ref.lineStart, ref.lineEnd);
+      } else {
+        makeFileLocal(link, s.id, ref.path, located);
+      }
       codeEl.parentNode.insertBefore(wrapper, codeEl);
       link.appendChild(codeEl);
       wrapper.appendChild(link);
-    } else {
-      codeEl.parentNode.insertBefore(wrapper, codeEl);
-      wrapper.appendChild(codeEl);
-    }
+      if (!located.local_path) return;
 
-    const editBtn = document.createElement("a");
-    editBtn.className = "file-editor-btn";
-    editBtn.href = vscodeUrl;
-    editBtn.title = `Open in VS Code: ${fullLocalPath}${editorLine}`;
-    editBtn.innerHTML = `<svg viewBox="0 0 16 16" width="10" height="10" fill="currentColor"><path d="M11.5 0a1.5 1.5 0 0 1 1.06.44l3 3a1.5 1.5 0 0 1 0 2.12l-9.5 9.5a1.5 1.5 0 0 1-.7.4l-4.5 1a.5.5 0 0 1-.6-.6l1-4.5a1.5 1.5 0 0 1 .4-.7l9.5-9.5A1.5 1.5 0 0 1 11.5 0zm-1 2L2.5 10l-.7 3.2 3.2-.7L13 4.5 10.5 2z"/></svg>`;
-    wrapper.appendChild(editBtn);
+      const editorLine = ref.lineStart ? `:${ref.lineStart}` : "";
+      const localPath = located.local_path.replace(/\\/g, "/");
+      const editBtn = document.createElement("a");
+      editBtn.className = "file-editor-btn";
+      editBtn.href = `vscode://file/${encodeURI(localPath)}${editorLine}`;
+      editBtn.title = `Open in VS Code: ${located.local_path}${editorLine}`;
+      editBtn.innerHTML = `<svg viewBox="0 0 16 16" width="10" height="10" fill="currentColor"><path d="M11.5 0a1.5 1.5 0 0 1 1.06.44l3 3a1.5 1.5 0 0 1 0 2.12l-9.5 9.5a1.5 1.5 0 0 1-.7.4l-4.5 1a.5.5 0 0 1-.6-.6l1-4.5a1.5 1.5 0 0 1 .4-.7l9.5-9.5A1.5 1.5 0 0 1 11.5 0zm-1 2L2.5 10l-.7 3.2 3.2-.7L13 4.5 10.5 2z"/></svg>`;
+      wrapper.appendChild(editBtn);
 
-    const cursorBtn = document.createElement("a");
-    cursorBtn.className = "file-editor-btn";
-    cursorBtn.href = cursorUrl;
-    cursorBtn.title = `Open in Cursor: ${fullLocalPath}${editorLine}`;
-    cursorBtn.innerHTML = `<svg viewBox="0 0 16 16" width="10" height="10" fill="currentColor"><path d="M1 1l5.2 13.4 1.7-5.6 5.6-1.7z"/></svg>`;
-    wrapper.appendChild(cursorBtn);
+      const cursorBtn = document.createElement("a");
+      cursorBtn.className = "file-editor-btn";
+      cursorBtn.href = `cursor://file/${encodeURI(localPath)}${editorLine}`;
+      cursorBtn.title = `Open in Cursor: ${located.local_path}${editorLine}`;
+      cursorBtn.innerHTML = `<svg viewBox="0 0 16 16" width="10" height="10" fill="currentColor"><path d="M1 1l5.2 13.4 1.7-5.6 5.6-1.7z"/></svg>`;
+      wrapper.appendChild(cursorBtn);
+    });
   });
 }
 

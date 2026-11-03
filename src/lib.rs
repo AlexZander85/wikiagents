@@ -15,6 +15,7 @@ pub mod blame;
 pub mod brief;
 pub mod commands;
 pub mod doctor;
+pub mod file_links;
 pub mod hook;
 pub mod index;
 pub mod mcp;
