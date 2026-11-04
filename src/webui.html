@@ -5251,7 +5251,7 @@ function linkifyFileReferences(container, s) {
   container.querySelectorAll("a").forEach((a) => {
     const href = a.getAttribute("href");
     if (!href) return;
-    if (/^(?:https?:|mailto:|vscode:|cursor:|#)/i.test(href)) return;
+    if (/^(?:https?:|mailto:|vscode:|#)/i.test(href)) return;
     let filePath = href;
     let fragment = "";
     const isFileUrl = /^file:\/\//i.test(filePath);
