@@ -4,6 +4,7 @@ mod claude_code;
 mod cline;
 mod codex;
 mod continue_dev;
+mod deepai_code;
 mod deepseek;
 mod free_pi;
 mod freebuff;
@@ -23,6 +24,7 @@ pub use antigravity::Antigravity;
 pub use claude_code::ClaudeCode;
 pub(crate) use codex::is_subagent_meta as codex_is_subagent_meta;
 pub use codex::{Codex, CodexHistory};
+pub use deepai_code::DeepAiCode;
 pub use deepseek::DeepSeek;
 pub use free_pi::{FreePiCli, Pi};
 pub use freebuff::Freebuff;
@@ -184,6 +186,7 @@ pub fn all() -> Vec<Box<dyn Adapter>> {
         Box::new(freebuff::Freebuff),
         Box::new(free_pi::FreePiCli),
         Box::new(free_pi::Pi),
+        Box::new(deepai_code::DeepAiCode),
     ];
 
     let json_exports: Vec<Box<dyn Adapter>> = vec![
@@ -222,6 +225,7 @@ pub fn all() -> Vec<Box<dyn Adapter>> {
 
 pub fn by_name(name: &str) -> Option<Box<dyn Adapter>> {
     let canonical = match name {
+        "deepai" | "deepai-code" | "deepaicode" => "deepai-code",
         "free-pi" => "free-pi-cli",
         "claude-web" | "claudeweb" => "claude-web",
         "deepseek-web" | "deepseekweb" => "deepseek-web",
